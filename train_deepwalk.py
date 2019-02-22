@@ -1,8 +1,7 @@
 import os
-import pickle
 import logging
 import argparse
-import functools
+
 import numpy as np
 import scipy.sparse as sp
 import pandas as pd
@@ -13,68 +12,28 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader
 from tensorboardX import SummaryWriter
 
 from data import RandomWalkDataset
 from models import SkipGramModel, BalancedSkipGramModel
-from utils import get_preprocessed_data, deepwalk, metapath_walk, TypeChecker, pca, balanced_walk, BalancedWalkFactory, just_walk
-from random_walk_statistic import normalize_row, random_walk_2, create_adjacency_matrix
+from utils import get_preprocessed_data
 
 
 def add_argument(parser):
-    parser.add_argument('--root',
-                        type=str,
-                        default='data')
-
-    parser.add_argument('--dataset',
-                        type=str,
-                        default='dblp',
-                        choices=['dblp', 'yelp'])
-
-    parser.add_argument('--epoch',
-                        type=int,
-                        default=10)
-
-    parser.add_argument('--batch_size',
-                        type=int,
-                        default=512)
-
-    parser.add_argument('--d',
-                        type=int,
-                        default=128)
-
-    parser.add_argument('--l',
-                        type=int,
-                        default=80)
-
-    parser.add_argument('--k',
-                        type=int,
-                        default=5)
-
-    parser.add_argument('--m',
-                        type=int,
-                        default=5)
-
-    parser.add_argument('--restore',
-                        action='store_true')
+    parser.add_argument('--root', type=str, default='data')
+    parser.add_argument('--dataset', type=str, default='dblp', choices=['blog', 'dblp', 'yelp'])
+    parser.add_argument('--epoch', type=int, default=10)
+    parser.add_argument('--batch_size', type=int, default=128)
+    parser.add_argument('--d', type=int, default=128)
+    parser.add_argument('--l', type=int, default=100)
+    parser.add_argument('--k', type=int, default=5)
+    parser.add_argument('--m', type=int, default=25)
+    parser.add_argument('--restore', action='store_true')
 
 
 def get_output_name(args):
     name = 'deepwalk_%d_%d_%d_%d' % (args.d, args.l, args.k, args.m)
     return name
-
-
-def serialize_adj_indice(data):
-    adj_data = [list(data['adj_indice'][x]) for x in range(data['node_num'])]
-    adj_size = [len(x) for x in adj_data]
-    adj_data = [item for sublist in adj_data for item in sublist]
-    adj_start = [None] * data['node_num']
-    cnt = 0
-    for x in range(data['node_num']):
-        adj_start[x] = cnt
-        cnt += adj_size[x]
-    return adj_data, adj_size, adj_start
 
 
 def deepwalk(v, l, adj_data, adj_size, adj_start):
@@ -110,78 +69,92 @@ def main(args):
     #handler = logging.StreamHandler()
     #logger.addHandler(handler)
 
-    data = get_preprocessed_data(args, type_split=False)
-    adj_data, adj_size, adj_start = serialize_adj_indice(data)
-    adj_data = torch.tensor(adj_data, dtype=torch.long, device=device)
-    adj_size = torch.tensor(adj_size, dtype=torch.float, device=device)
-    adj_start = torch.tensor(adj_start, dtype=torch.long, device=device)
+    node_df, edge_df, _, data = get_preprocessed_data(args)
 
-    node_num = data['node_num']
-    degree_dist = data['degree']
-    class_dict = data['class']
-    type_interval = data['type_interval']
+    adj_data = data['adj_data']
+    adj_size = data['adj_size']
+    adj_start = data['adj_start']
+    type_order = data['type_order']
+    degree = data['degree']
 
-    logger.info("Total type number: " + str(node_num))
-    logger.info("Total node number: ")
-    for k, v in data['type_interval'].items():
-        logger.info('\t\t' + k + ': ' + str(v[1]-v[0]+1))
-    logger.info("Degree distribution:" + str(degree_dist))
+    adj_data = torch.tensor(adj_data, dtype=torch.long)
+    adj_size = torch.tensor(adj_size, dtype=torch.float)
+    adj_start = torch.tensor(adj_start, dtype=torch.long)
+    degree = torch.from_numpy(degree)
 
-    model = SkipGramModel(node_num, args.d, args.l, args.k, args.m).to(device)
+    type_ = [None] *len(node_df)
+    for idx, row in node_df.iterrows():
+        type_[row['index']] = type_order.index(row['type'])
+    type_ = torch.tensor(type_, dtype=torch.long)
+
+    adj_size = adj_size.sum(dim=1)
+    adj_start = adj_start[:, 0]
+
+    model = SkipGramModel(len(node_df), args.d, args.l, args.k, args.m).to(device)
     criterion = nn.BCEWithLogitsLoss()
-    optimizer = optim.Adam(model.parameters(), lr=1e-2)
-
-    if args.restore:
-        embedding = np.load(os.path.join('output', get_output_name(args)+'.npy'))
-        model.node_embedding.weight.data.copy_(torch.from_numpy(embedding))
+    optimizer = optim.Adam(model.parameters(), lr=1e-3)
 
     os.makedirs('output', exist_ok=True)
 
     # TensorboardX
     writer = SummaryWriter(os.path.join('runs', get_output_name(args)))
 
+    start_node = torch.arange(len(node_df))[degree > 0]
+    num_iter = start_node.shape[0] // args.batch_size
+
     n_iter = 0
-    num_iter = data['node_num'] // args.batch_size
-    degree_dist = torch.from_numpy(degree_dist).to(device)
     for epoch in range(args.epoch):
-        start_node = torch.randperm(data['node_num'], device=device)[:num_iter*args.batch_size].view(num_iter, args.batch_size)
+        with torch.no_grad():
+            random_idx = torch.randperm(start_node.shape[0])
+            start_node = start_node[random_idx][:num_iter*args.batch_size].view(num_iter, args.batch_size)
 
-        for idx in tqdm.tqdm(range(num_iter), ascii=True):
-            with torch.no_grad():
-                walk = deepwalk(start_node[idx], args.l, adj_data, adj_size, adj_start)
-                negative = torch.multinomial(degree_dist,
-                                             args.batch_size*args.m*(args.l-args.k),
-                                             replacement=True).view(args.batch_size,
-                                                                    args.l-args.k,
-                                                                    args.m)
+        with tqdm.tqdm(range(num_iter), total=num_iter, ascii=True) as t:
+            for idx in t:
+                with torch.no_grad():
+                    walk = deepwalk(start_node[idx], args.l, adj_data, adj_size, adj_start)
+                    #negative = torch.multinomial(degree,
+                    #                             args.batch_size*args.m*(args.l-args.k),
+                    #                             replacement=True).view(args.batch_size,
+                    #                                                    args.l-args.k,
+                    #                                                    args.m)
+                    negative = torch.randint(len(node_df), (args.batch_size, args.l-args.k, args.m))
+                    walk = walk.to(device)
+                    negative = negative.to(device)
 
-            optimizer.zero_grad()
-            pos, neg = model(walk, negative)
+                optimizer.zero_grad()
+                pos, neg = model(walk, negative)
 
-            label_pos = torch.ones_like(pos)
-            label_neg = torch.zeros_like(neg)
+                label_pos = torch.ones_like(pos)
+                label_neg = torch.zeros_like(neg)
 
-            y = torch.cat((pos, neg), dim=2)
-            label = torch.cat((label_pos, label_neg), dim=2)
-            # [B, L-K, K+M]
+                y = torch.cat((pos, neg), dim=2)
+                label = torch.cat((label_pos, label_neg), dim=2)
+                # [B, L-K, K+M]
 
-            loss = criterion(y, label)
-            loss.backward()
-            optimizer.step()
+                loss = criterion(y, label)
+                loss.backward()
+                optimizer.step()
 
-            writer.add_scalar('data/loss', loss, n_iter)
-            n_iter += 1
+                writer.add_scalar('data/loss', loss, n_iter)
+                n_iter += 1
+                t.set_postfix(loss=loss.item())
 
         # Save embedding
         total_embedding = model.node_embedding.weight.data
-        for k, v in type_interval.items():
-            writer.add_embedding(total_embedding[v[0]:v[1]+1, :],
-                                 metadata=class_dict.get(k),
-                                 global_step=epoch,
-                                 tag=k)
+        for i, t in enumerate(type_order):
+            writer.add_embedding(total_embedding[type_==i],
+                                 global_step=epoch, tag=t+'_none')
+            if 'L' in node_df.columns:
+                writer.add_embedding(total_embedding[type_==i],
+                                     metadata=node_df[node_df['type']==t]['L'].values,
+                                     global_step=epoch, tag=t+'_L')
+            if 'L2' in node_df.columns:
+                writer.add_embedding(total_embedding[v[0]:v[1]+1, :],
+                                     metadata=node_df[node_df['type']==t]['L2'].values,
+                                     global_step=epoch, tag=t+'_L2')
 
-    np.save(os.path.join('output', get_output_name(args)+'.npy'),
-            model.node_embedding.weight.detach().cpu().numpy())
+        np.save(os.path.join('output', get_output_name(args)+'.npy'),
+                model.node_embedding.weight.detach().cpu().numpy())
     writer.close()
 
 if __name__=='__main__':

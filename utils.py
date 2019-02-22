@@ -1,4 +1,5 @@
 import os
+import random
 import pickle
 import functools
 import multiprocessing
@@ -11,118 +12,114 @@ import scipy.sparse as sp
 
 import torch
 
-def pca(X, k=2):
-    X = X - torch.mean(X, 0).expand_as(X)
-    U, S, V = torch.svd(X.t())
-    return torch.mm(X, U[:, :k])
 
+def preprocess(node_df_dict, edge_df_dict):
+    print('Preprocessing: Re-indexing node index')
+    start_idx = 0
+    node_idx_dict = {}
+    for k, v in node_df_dict.items():
+        node_idx_dict[k] = {x: i for i, x in enumerate(v['index'], start=start_idx)}
+        start_idx += len(v)
+    for k in edge_df_dict.keys():
+        edge_df_dict[k][0] = edge_df_dict[k][0].apply(lambda x: node_idx_dict[k[0]][x])
+        edge_df_dict[k][1] = edge_df_dict[k][1].apply(lambda x: node_idx_dict[k[1]][x])
+        edge_df_dict[k][2] = k[0]
+        edge_df_dict[k][3] = k[1]
+    for k in node_df_dict.keys():
+        node_df_dict[k]['index'] = node_df_dict[k]['index'].apply(lambda x: node_idx_dict[k][x])
+        node_df_dict[k]['type'] = k
 
-def get_type(idx: int, type_interval_dict: dict):
-    for k, (idx_min, idx_max) in type_interval_dict.items():
-        if idx_min <= idx and idx <= idx_max:
-            return k
-    raise Exception("Type unmatch")
+    print('Preprocessing: merge dict')
+    node_df = pd.concat(node_df_dict.values(), axis=0, sort=False)
+    edge_df = pd.concat(edge_df_dict.values(), axis=0, sort=False)
+    edge_df.columns = ['v1', 'v2', 't1', 't2']
+
+    print('Preprocessing: make symmetric and filter unique edge')
+    tmp = edge_df.copy()
+    tmp.columns = ['v2', 'v1', 't2', 't1']
+    edge_df = pd.concat((edge_df, tmp), axis=0, sort=False)
+    edge_df = edge_df.drop_duplicates()
+
+    # Take unique edge
+    edge_df = edge_df[edge_df['v1']<edge_df['v2']]
+    print('\tFinal edge number: %d' % len(edge_df))
+    edge_df['edge_type'] = edge_df['t1'] + '-' + edge_df['t2']
+    edge_df = edge_df.reset_index(drop=True)
+
+    print('Preprocessing: Remove edge for link prediction')
+    test_edge_df = edge_df.groupby('edge_type').apply(lambda x: x.sample(len(x)//10)).reset_index(drop=True)
+    test_edge_df = edge_df.reset_index().merge(test_edge_df, on=list(edge_df.columns)).set_index('index')
+    edge_df = edge_df.drop(test_edge_df.index, axis=0)
+    print('\tAfter removing testing edge: %d' % len(edge_df))
+
+    return node_df, edge_df, test_edge_df
 
 
 def load_data(args):
     root = args.root
+    node_df_dict = {}
+    edge_df_dict = {}
     if args.dataset == 'dblp':
-        author_df = pd.read_csv(os.path.join(root, 'dblp', 'author.txt'), 
-                sep='\t', header=None, names=['index', 'A', 'L'])
-        paper_df = pd.read_csv(os.path.join(root, 'dblp', 'paper.txt'), 
-                sep='\t', header=None, names=['index', 'P', 'L'])
-        topic_df = pd.read_csv(os.path.join(root, 'dblp', 'topic.txt'), 
-                sep='\t', header=None, names=['index', 'T'])
-        venue_df = pd.read_csv(os.path.join(root, 'dblp', 'venue.txt'), 
-                sep='\t', header=None, names=['index', 'V', 'L'])
-
-        write_df = pd.read_csv(os.path.join(root, 'dblp', 'write.txt'), 
-                sep='\t', header=None, names=['A', 'P'])
-        publish_df = pd.read_csv(os.path.join(root, 'dblp', 'publish.txt'), 
-                sep='\t', header=None, names=['V', 'P'])
-        mention_df = pd.read_csv(os.path.join(root, 'dblp', 'mention.txt'), 
-                sep='\t', header=None, names=['P', 'T'])
-        cite_df = pd.read_csv(os.path.join(root, 'dblp', 'cite.txt'), 
-                sep='\t', header=None, names=['P1', 'P2'])
-        node_df_dict = {'A': author_df, 'P': paper_df, 'T': topic_df, 'V': venue_df}
-        edge_df_dict = {'AP': write_df, 'VP': publish_df, 'TP': mention_df, 'PP': cite_df}
-    else:
-        node_df_dict = {}
-        edge_df_dict = {}
+        node_df_dict['A'] = pd.read_csv(os.path.join(root, 'dblp', 'author.txt'), sep='\t', header=None, names=['index', 'A', 'L'])
+        node_df_dict['P'] = pd.read_csv(os.path.join(root, 'dblp', 'paper.txt'), sep='\t', header=None, names=['index', 'P', 'L'])
+        node_df_dict['T'] = pd.read_csv(os.path.join(root, 'dblp', 'topic.txt'), sep='\t', header=None, names=['index', 'T'])
+        node_df_dict['V'] = pd.read_csv(os.path.join(root, 'dblp', 'venue.txt'), sep='\t', header=None, names=['index', 'V', 'L'])
+        edge_df_dict['AP'] = pd.read_csv(os.path.join(root, 'dblp', 'write.txt'), sep='\t', header=None)
+        edge_df_dict['VP'] = pd.read_csv(os.path.join(root, 'dblp', 'publish.txt'), sep='\t', header=None)
+        edge_df_dict['PT'] = pd.read_csv(os.path.join(root, 'dblp', 'mention.txt'), sep='\t', header=None)
+        edge_df_dict['PP'] = pd.read_csv(os.path.join(root, 'dblp', 'cite.txt'), sep='\t', header=None)
+    elif args.dataset == 'yelp':
         node_df_dict['U'] = pd.read_csv(os.path.join(root, 'yelp', 'node', 'U.csv'), sep='\t')
         node_df_dict['B'] = pd.read_csv(os.path.join(root, 'yelp', 'node', 'B.csv'), sep='\t')
         node_df_dict['R'] = pd.read_csv(os.path.join(root, 'yelp', 'node', 'R.csv'), sep='\t')
         node_df_dict['W'] = pd.read_csv(os.path.join(root, 'yelp', 'node', 'W.csv'), sep='\t', keep_default_na=False)
-
         edge_df_dict['RU'] = pd.read_csv(os.path.join(root, 'yelp', 'edge', 'RU.csv'), sep='\t')
         edge_df_dict['RB'] = pd.read_csv(os.path.join(root, 'yelp', 'edge', 'RB.csv'), sep='\t')
         edge_df_dict['RW'] = pd.read_csv(os.path.join(root, 'yelp', 'edge', 'RW.csv'), sep='\t')
         edge_df_dict['UU'] = pd.read_csv(os.path.join(root, 'yelp', 'edge', 'UU.csv'), sep='\t')
-    return node_df_dict, edge_df_dict
+    elif args.dataset == 'blog':
+        node_df_dict['U'] = pd.read_csv(os.path.join(root, 'blog-catalog', 'nodes.csv'), header=None, names=['index'])
+        node_df_dict['G'] = pd.read_csv(os.path.join(root, 'blog-catalog', 'groups.csv'), header=None, names=['index'])
+        edge_df_dict['UU'] = pd.read_csv(os.path.join(root, 'blog-catalog', 'edges.csv'), sep=',', header=None)
+        edge_df_dict['UG'] = pd.read_csv(os.path.join(root, 'blog-catalog', 'group-edges.csv'), sep=',', header=None)
+        node_df, edge_df, test_edge_df = preprocess(node_df_dict, edge_df_dict)
+    elif args.dataset == 'douban_movie':
+        with open(os.path.join(root, 'douban_movie', 'node_type.pickle'), 'rb') as f:
+            node_type = pickle.load(f)
+        edge_df = pd.read_csv(os.path.join(root, 'douban_movie', 'edge.csv'), sep='\t', usecols=['v1', 'v2', 't1', 't2'])
+        test_edge_df = pd.read_csv(os.path.join(root, 'douban_movie', 'test_user_movie.csv'), sep='\t', usecols=['v1', 'v2', 't1', 't2'])
+        test_node_df = {'M': pd.read_csv(os.path.join(root, 'douban_movie', 'movie_label.csv'), sep='\t')}
+
+    return node_type, edge_df, test_node_df, test_edge_df
 
 
-def get_preprocessed_data(args, type_split=False):
-    fname = 'adj'
-    fname = fname+'_type' if type_split else fname
-    fname = fname+'.pickle'
-    fname = os.path.join('preprocess', args.dataset, fname)
+def convert_defaultdict_to_dict(x):
+    if isinstance(x, defaultdict):
+        x = {k: convert_defaultdict_to_dict(v) for k, v in x.items()}
+    return x
 
-    # If exist, load data
-    if os.path.exists(fname):
-        with open(fname, 'rb') as f:
-            return pickle.load(f)
-    assert False
-    result = dict()
 
-    # Get node num
-    node_df_dict, edge_df_dict = load_data(args)
-    node_num = sum([len(v) for v in node_df_dict.values()])
-    result['node_num'] = node_num
-
-    # Type interval information
-    type_interval = {k: (v['index'].min(), v['index'].max()) for k, v in node_df_dict.items()}
-    type_size = {k: max_ - min_ + 1 for k, (min_ , max_) in type_interval.items()}
-    result['type_interval'] = type_interval
-    result['type_size'] = type_size
-
-    # For visualization, get class idx for each type of node
-    class_dict = {}
-    for k, v in node_df_dict.items():
-        if 'L' in v.columns:
-            label_dict = {x: i for i, x in enumerate(v['L'].unique())}
-            class_dict[k] = v['L'].apply(label_dict.get).values
-    result['class'] = class_dict
-
+def create_graph(edge_df, node_num, type_order):
     # Indice information
-    adj_indice = create_adjacency_list_per_type(edge_df_dict)
+    graph = defaultdict(lambda : defaultdict(set))
+    for idx, v in edge_df.groupby(by=['v1', 't2'])['v2'].apply(set).iteritems():
+        graph[idx[0]][idx[1]] = graph[idx[0]][idx[1]].union(v)
+    for idx, v in edge_df.groupby(by=['v2', 't1'])['v1'].apply(set).iteritems():
+        graph[idx[0]][idx[1]] = graph[idx[0]][idx[1]].union(v)
 
-    # Get degree distribution
-    degree_dist = np.zeros((node_num,))
+    # Compact representation of graph
+    adj_data = [graph[x] for x in range(node_num)]
+    adj_data = [[x[y] for y in type_order] for x in adj_data]
+    adj_size = [[len(y) for y in x] for x in adj_data]
+    adj_start = [[None]*len(type_order) for _ in range(node_num)]
+    count = 0
     for i in range(node_num):
-        degree_dist[i] = sum([len(x) for x in adj_indice[i].values()])
-    degree_dist = degree_dist / degree_dist.sum()
-    result['degree'] = degree_dist
+        for j in range(len(type_order)):
+            adj_start[i][j] = count
+            count += adj_size[i][j]
+    adj_data = [item for sublist in adj_data for subsublist in sublist for item in subsublist]
 
-    # If type_split is false, union
-    if type_split == False:
-        adj_indice = {k: set().union(*v.values()) for k, v in adj_indice.items()}
-    result['adj_indice'] = adj_indice
-
-    # Save data
-    os.makedirs(os.path.join('preprocess', args.dataset), exist_ok=True)
-    with open(fname, 'wb') as f:
-        pickle.dump(result, f, protocol=pickle.HIGHEST_PROTOCOL)
-
-    return result
-
-
-def normalize_row(matrix: sp.coo_matrix):
-    rowsum = matrix.sum(axis=1).A.ravel()
-    rowsum[rowsum==0] = 1
-    d_inverse = sp.diags(1/rowsum)
-    matrix = d_inverse.dot(matrix)
-    matrix.eliminate_zeros()
-    return matrix
+    return adj_data, adj_size, adj_start
 
 
 def create_adjacency_matrix(adj_list: dict, shape: (int, int)):
@@ -131,32 +128,6 @@ def create_adjacency_matrix(adj_list: dict, shape: (int, int)):
 
     adj_matrix = sp.coo_matrix((np.ones(len(row)), (row, col)), shape=shape).tocsr()
     return adj_matrix
-
-
-def create_adjacency_list_per_type(edge_df_dict):
-    graph = defaultdict(lambda : defaultdict(set))
-    for k, edge_df in edge_df_dict.items():
-        if k[0] == k[1]:
-            t0, t1 = k[0], k[1]
-            l0, l1 = ['%s1'%k[0], '%s2'%k[0]]
-        else:
-            t0, t1 = k[0], k[1]
-            l0, l1 = k[0], k[1]
-
-        for _, row in tqdm.tqdm(edge_df.iterrows(), total=len(edge_df), ascii=True):
-            graph[row[l0]][t1].add(row[l1])
-            graph[row[l1]][t0].add(row[l0])
-    return dict(graph)
-
-
-class TypeChecker(object):
-    def __init__(self, type_interval):
-        self.type_interval = type_interval
-
-    def __call__(self, v):
-        for k, (min_idx, max_idx) in self.type_interval.items():
-            if min_idx <= v and v <= max_idx:
-                return k
 
 
 def deepwalk(v, adj, l):
@@ -176,35 +147,6 @@ def metapath_walk(v, adj_dict, metapath, l, typechecker):
         assert next_type in adj_dict[walk[idx-1]], '%s is not in %d' % (next_type, walk[idx-1])
         adj_list = adj_dict[walk[idx-1]][next_type]
         walk[idx] = np.random.choice(list(adj_list), 1)[0]
-    return walk
-
-
-def just_walk(v, adj_dict, l, typechecker, alpha, que_size):
-    walk = [v] * l
-    same_domain_count = 0
-    que = deque()
-    que.append(typechecker(walk[0]))
-    for idx in range(1, l):
-        cur_type = typechecker(walk[idx-1])
-        possible_type = set(adj_dict[walk[idx-1]].keys())
-        same_domain_count += 1
-        if cur_type not in possible_type:
-            stay = 0
-        elif set(cur_type) == possible_type:
-            stay = 1
-        else:
-            stay = 1 if np.random.rand(1) < np.power(alpha, same_domain_count) else 0
-        if stay:
-            walk[idx] = np.random.choice(list(adj_dict[walk[idx-1]][cur_type]), 1)[0]
-        else:
-            if len(possible_type-set(que)) == 0:
-                target_domain = np.random.choice(list(possible_type), 1)[0]
-            else:
-                target_domain = np.random.choice(list(possible_type-set(que)), 1)[0]
-            if len(que) == que_size:
-                que.popleft()
-            que.append(target_domain)
-            walk[idx] = np.random.choice(list(adj_dict[walk[idx-1]][target_domain]), 1)[0]
     return walk
 
 
@@ -444,4 +386,17 @@ def create_guidende_vector():
 
     np.save('guidence_vector.npy', guidence_vector)
     print("Complete guidence vector")
+
+def pca(X, k=2):
+    X = X - torch.mean(X, 0).expand_as(X)
+    U, S, V = torch.svd(X.t())
+    return torch.mm(X, U[:, :k])
+
+
+def get_type(idx, type_interval_dict):
+    for k, (idx_min, idx_max) in type_interval_dict.items():
+        if idx_min <= idx and idx <= idx_max:
+            return k
+    raise Exception("Type unmatch")
+
 

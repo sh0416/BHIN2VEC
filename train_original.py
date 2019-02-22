@@ -16,10 +16,8 @@ import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 from tensorboardX import SummaryWriter
 
-from data import RandomWalkDataset
-from models import SkipGramModel, BalancedSkipGramModel
-from utils import get_preprocessed_data, deepwalk, metapath_walk, TypeChecker, pca, balanced_walk, BalancedWalkFactory, just_walk
-from random_walk_statistic import normalize_row, random_walk_2, create_adjacency_matrix
+from models import SkipGramModel
+from utils import get_preprocessed_data
 
 
 def add_argument(parser):
@@ -37,10 +35,6 @@ def add_argument(parser):
                         default='deepwalk',
                         choices=['deepwalk', 'metapath2vec', 'just'])
 
-    parser.add_argument('--metapath',
-                        type=str,
-                        default='APTPVPTP')
-
     parser.add_argument('--alpha',
                         type=float,
                         default=0.5)
@@ -55,7 +49,7 @@ def add_argument(parser):
 
     parser.add_argument('--batch_size',
                         type=int,
-                        default=128)
+                        default=512)
 
     parser.add_argument('--d',
                         type=int,
@@ -79,11 +73,57 @@ def add_argument(parser):
 
 def get_output_name(args):
     name = '%s_%d_%d_%d_%d' % (args.model, args.d, args.l, args.k, args.m)
-    if args.model == 'metapath2vec':
-        name += '_%s' % (args.metapath)
-    elif args.model == 'just':
-        name += '_%.2f_%d' % (args.alpha, args.que_size)
+    name += '_%.2f_%d' % (args.alpha, args.que_size)
     return name
+
+def get_type(v, type_interval_dict, type_order):
+    for k, interval in type_interval_dict.items():
+        if interval[0]<= v and v<=interval[1]:
+            return type_order.index(k)
+    raise Exception
+
+def justwalk(v, v_t, l, alpha, que_size, adj_data, adj_size, adj_start):
+    walk = v.new_zeros(v.shape[0], l)
+    same_domain_count = v.new_zeros(v.shape[0])
+
+    for i in range(v.shape[0]):
+        que = deque()
+        que.append(typechecker(walk[0]))
+        for idx in range(1, l):
+            same_domain_count[i] += 1
+            if v_t[i] not in possible_type:
+                stay = 0
+            elif v_t[i] == adj_size[walk[i, idx-1], :].sum():
+                stay = 1
+            else:
+                stay = 1 if np.random.rand(1) < np.power(alpha, same_domain_count) else 0
+            if stay:
+                walk[idx] = np.random.choice(list(adj_dict[walk[idx-1]][cur_type]), 1)[0]
+            else:
+                if len(possible_type-set(que)) == 0:
+                    target_domain = np.random.choice(list(possible_type), 1)[0]
+                else:
+                    target_domain = np.random.choice(list(possible_type-set(que)), 1)[0]
+                if len(que) == que_size:
+                    que.popleft()
+                que.append(target_domain)
+                walk[idx] = np.random.choice(list(adj_dict[walk[idx-1]][target_domain]), 1)[0]
+    return walk
+
+
+def serialize_adj_indice(data):
+    type_order = list(data['type_interval'].keys())
+    adj_data = [data['adj_indice'][x] for x in range(data['node_num'])]
+    adj_data = [[list(x[y]) for y in type_order] for x in adj_data]
+    adj_size = [[len(y) for y in x] for x in adj_data]
+    adj_start = [[None]*len(type_order) for _ in range(data['node_num'])]
+    count = 0
+    for i in range(data['node_num']):
+        for j in range(len(type_order)):
+            adj_start[i][j] = count
+            count += adj_size[i][j]
+    adj_data = [item for sublist in adj_data for subsublist in sublist for item in subsublist]
+    return adj_data, adj_size, adj_start, type_order
 
 def main(args):
     logger = logging.getLogger()
@@ -92,12 +132,11 @@ def main(args):
     #handler = logging.StreamHandler()
     #logger.addHandler(handler)
 
-    if args.model == 'deepwalk':
-        data = get_preprocessed_data(args, type_split=False)
-    elif args.model == 'metapath2vec':
-        data = get_preprocessed_data(args, type_split=True)
-    elif args.model == 'just':
-        data = get_preprocessed_data(args, type_split=True)
+    data = get_preprocessed_data(args, type_split=True)
+    adj_data, adj_size, adj_start, type_order = serialize_adj_indice(data)
+    adj_data = torch.tensor(adj_data, dtype=torch.long)#.to(device)
+    adj_size = torch.tensor(adj_size, dtype=torch.float)#.to(device)
+    adj_start = torch.tensor(adj_start, dtype=torch.long)#.to(device)
 
     node_num = data['node_num']
     degree_dist = data['degree']
@@ -108,33 +147,6 @@ def main(args):
     for k, v in data['type_interval'].items():
         logger.info('\t\t' + k + ': ' + str(v[1]-v[0]+1))
     logger.info("Degree distribution:" + str(degree_dist))
-
-    if args.model == 'deepwalk':
-        walk_fun = functools.partial(deepwalk, adj=data['adj_indice'])
-    elif args.model == 'metapath2vec':
-        typechecker = TypeChecker(type_interval)
-        walk_fun = functools.partial(metapath_walk,
-                                     adj_dict=data['adj_indice'],
-                                     metapath=args.metapath,
-                                     typechecker=typechecker)
-    elif args.model == 'just':
-        typechecker = TypeChecker(type_interval)
-        walk_fun = functools.partial(just_walk,
-                                     adj_dict=data['adj_indice'],
-                                     typechecker=typechecker,
-                                     alpha=args.alpha,
-                                     que_size=args.que_size)
-    dataset = RandomWalkDataset(node_num,
-                                walk_fun=walk_fun,
-                                neg_dist=degree_dist,
-                                l=args.l,
-                                k=args.k,
-                                m=args.m)
-
-    loader = DataLoader(dataset,
-                        batch_size=args.batch_size,
-                        shuffle=True,
-                        num_workers=24)
 
     model = SkipGramModel(node_num, args.d, args.l, args.k, args.m).cuda()
     criterion = nn.BCEWithLogitsLoss()
@@ -150,31 +162,43 @@ def main(args):
     writer = SummaryWriter(os.path.join('runs', get_output_name(args)))
 
     n_iter = 0
+    num_iter = data['node_num'] // args.batch_size
+    degree_dist = torch.from_numpy(degree_dist)#.to(device)
     for epoch in range(args.epoch):
-        epoch_loss = 0
-        for idx, (walk, negative) in tqdm.tqdm(enumerate(loader), total=len(loader), ascii=True):
-            walk = walk.cuda()
-            negative = negative.cuda()
+        start_node = torch.randperm(data['node_num'])[:num_iter*args.batch_size].view(num_iter, args.batch_size)#.to(device)
 
-            optimizer.zero_grad()
-            pos, neg = model(walk, negative)
+        with tqdm.tqdm(range(num_iter), total=num_iter, ascii=True) as t:
+            for idx in t:
+                with torch.no_grad():
+                    node = start_node[idx]
+                    node_type = [get_type(x, data['type_interval'], type_order) for x in node]
 
-            label_pos = torch.ones_like(pos)
-            label_neg = torch.zeros_like(neg)
+                    walk = justwalk(node, node_type, args.l, args.alpha, args.que_size, adj_data, adj_size, adj_start)
+                    negative = torch.multinomial(degree_dist,
+                                                 args.batch_size*args.m*(args.l-args.k),
+                                                 replacement=True).view(args.batch_size,
+                                                                        args.l-args.k,
+                                                                        args.m)
+                    walk = walk.to(device)
+                    negative = negative.to(device)
 
-            y = torch.cat((pos, neg), dim=2)
-            label = torch.cat((label_pos, label_neg), dim=2)
-            # [B, L-K, K+M]
+                optimizer.zero_grad()
+                pos, neg = model(walk, negative)
 
-            loss = criterion(y, label)
-            epoch_loss += loss
-            loss.backward()
-            optimizer.step()
+                label_pos = torch.ones_like(pos)
+                label_neg = torch.zeros_like(neg)
 
-            if idx % 10 == 9:
+                y = torch.cat((pos, neg), dim=2)
+                label = torch.cat((label_pos, label_neg), dim=2)
+                # [B, L-K, K+M]
+
+                loss = criterion(y, label)
+                loss.backward()
+                optimizer.step()
+
                 writer.add_scalar('data/loss', loss, n_iter)
-            n_iter += 1
-        epoch_loss /= len(loader)
+                n_iter += 1
+                t.set_postfix(loss=loss.item())
 
         # Save embedding
         total_embedding = model.node_embedding.weight.data
@@ -182,9 +206,13 @@ def main(args):
             writer.add_embedding(total_embedding[v[0]:v[1]+1, :],
                                  metadata=class_dict.get(k),
                                  global_step=epoch, tag=k)
+            if (k+'2') in class_dict.keys():
+                writer.add_embedding(total_embedding[v[0]:v[1]+1, :],
+                                     metadata=class_dict.get(k+'2'),
+                                     global_step=epoch, tag=k+'2')
 
-    np.save(os.path.join('output', get_output_name(args)+'.npy'),
-            model.node_embedding.weight.detach().cpu().numpy())
+        np.save(os.path.join('output', get_output_name(args)+'.npy'),
+                model.node_embedding.weight.detach().cpu().numpy())
     writer.close()
 
 if __name__=='__main__':

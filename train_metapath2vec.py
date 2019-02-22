@@ -28,7 +28,7 @@ def add_argument(parser):
     parser.add_argument('--dataset',
                         type=str,
                         default='dblp',
-                        choices=['dblp', 'yelp'])
+                        choices=['blog', 'dblp', 'yelp'])
 
     parser.add_argument('--metapath',
                         type=str,
@@ -131,11 +131,11 @@ def main(args):
 
     data = get_preprocessed_data(args, type_split=True)
     adj_data, adj_size, adj_start, type_order = serialize_adj_indice(data)
-    adj_data = torch.tensor(adj_data, dtype=torch.long, device=device)
-    adj_size = torch.tensor(adj_size, dtype=torch.float, device=device)
-    adj_start = torch.tensor(adj_start, dtype=torch.long, device=device)
+    adj_data = torch.tensor(adj_data, dtype=torch.long)#.to(device)
+    adj_size = torch.tensor(adj_size, dtype=torch.float)#.to(device)
+    adj_start = torch.tensor(adj_start, dtype=torch.long)#.to(device)
 
-    metapath = torch.tensor([type_order.index(x) for x in args.metapath], dtype=torch.long, device=device)
+    metapath = torch.tensor([type_order.index(x) for x in args.metapath], dtype=torch.long)#.to(device)
 
     node_num = data['node_num']
     degree_dist = data['degree']
@@ -162,39 +162,43 @@ def main(args):
 
     n_iter = 0
     num_iter = data['node_num'] // args.batch_size
-    degree_dist = torch.from_numpy(degree_dist).to(device)
+    degree_dist = torch.from_numpy(degree_dist)#.to(device)
     for epoch in range(args.epoch):
         with torch.no_grad():
-            start_node = torch.randperm(data['node_num'], device=device)[:num_iter*args.batch_size].view(num_iter, args.batch_size)
+            start_node = torch.randperm(data['node_num'])[:num_iter*args.batch_size].view(num_iter, args.batch_size)#.to(device)
 
-        for idx in tqdm.tqdm(range(num_iter), ascii=True):
-            with torch.no_grad():
-                node = start_node[idx]
-                node_type = [get_type(x, data['type_interval'], type_order) for x in node]
+        with tqdm.tqdm(range(num_iter), total=num_iter, ascii=True) as t:
+            for idx in t:
+                with torch.no_grad():
+                    node = start_node[idx]
+                    node_type = [get_type(x, data['type_interval'], type_order) for x in node]
 
-                walk = metapathwalk(node, node_type, args.l, metapath, adj_data, adj_size, adj_start)
-                negative = torch.multinomial(degree_dist,
-                                             args.batch_size*args.m*(args.l-args.k),
-                                             replacement=True).view(args.batch_size,
-                                                                    args.l-args.k,
-                                                                    args.m)
+                    walk = metapathwalk(node, node_type, args.l, metapath, adj_data, adj_size, adj_start)
+                    negative = torch.multinomial(degree_dist,
+                                                 args.batch_size*args.m*(args.l-args.k),
+                                                 replacement=True).view(args.batch_size,
+                                                                        args.l-args.k,
+                                                                        args.m)
+                    walk = walk.to(device)
+                    negative = negative.to(device)
 
-            optimizer.zero_grad()
-            pos, neg = model(walk, negative)
+                optimizer.zero_grad()
+                pos, neg = model(walk, negative)
 
-            label_pos = torch.ones_like(pos)
-            label_neg = torch.zeros_like(neg)
+                label_pos = torch.ones_like(pos)
+                label_neg = torch.zeros_like(neg)
 
-            y = torch.cat((pos, neg), dim=2)
-            label = torch.cat((label_pos, label_neg), dim=2)
-            # [B, L-K, K+M]
+                y = torch.cat((pos, neg), dim=2)
+                label = torch.cat((label_pos, label_neg), dim=2)
+                # [B, L-K, K+M]
 
-            loss = criterion(y, label)
-            loss.backward()
-            optimizer.step()
+                loss = criterion(y, label)
+                loss.backward()
+                optimizer.step()
 
-            writer.add_scalar('data/loss', loss, n_iter)
-            n_iter += 1
+                writer.add_scalar('data/loss', loss, n_iter)
+                n_iter += 1
+                t.set_postfix(loss=loss.item())
 
         # Save embedding
         total_embedding = model.node_embedding.weight.data
@@ -202,9 +206,13 @@ def main(args):
             writer.add_embedding(total_embedding[v[0]:v[1]+1, :],
                                  metadata=class_dict.get(k),
                                  global_step=epoch, tag=k)
+            if (k+'2') in class_dict.keys():
+                writer.add_embedding(total_embedding[v[0]:v[1]+1, :],
+                                     metadata=class_dict.get(k+'2'),
+                                     global_step=epoch, tag=k+'2')
 
-    np.save(os.path.join('output', get_output_name(args)+'.npy'),
-            model.node_embedding.weight.detach().cpu().numpy())
+        np.save(os.path.join('output', get_output_name(args)+'.npy'),
+                model.node_embedding.weight.detach().cpu().numpy())
     writer.close()
 
 if __name__=='__main__':

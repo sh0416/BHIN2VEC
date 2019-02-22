@@ -13,11 +13,17 @@ def execute(d, k, m, device):
                     '--d', str(d),
                     '--k', str(k),
                     '--m', str(m)]
-    """
     command_args = ['python',
                     'train_metapath2vec.py',
                     '--dataset', 'yelp',
                     '--metapath', 'URWRBRWR',
+                    '--d', str(d),
+                    '--k', str(k),
+                    '--m', str(m)]
+    """
+    command_args = ['python',
+                    'train.py',
+                    '--dataset', 'yelp',
                     '--d', str(d),
                     '--k', str(k),
                     '--m', str(m)]
