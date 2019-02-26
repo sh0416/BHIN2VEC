@@ -24,24 +24,24 @@ class SkipGramModel(nn.Module):
         positive = self.node_embedding(positive).transpose(2, 3)
         # [B, L-K, D, K]
         negative = self.node_embedding(negative).transpose(2, 3)
-        # [B, L-K, D, M]
+        # [B, L-K, D, K*M]
 
         walk = walk.view(-1, 1, self.dim)
         # [B*(L-K), 1, D]
         positive = positive.view(-1, self.dim, self.k)
         # [B*(L-K), D, K]
-        negative = negative.view(-1, self.dim, self.m)
-        # [B*(L-K), D, M]
+        negative = negative.view(-1, self.dim, self.k*self.m)
+        # [B*(L-K), D, K*M]
 
         pos = torch.bmm(walk, positive)
         # [B*(L-K), 1, K]
         neg = torch.bmm(walk, negative)
-        # [B*(L-K), 1, M]
+        # [B*(L-K), 1, K*M]
 
         pos = pos.view(-1, self.l-self.k, self.k)
         # [B, L-K, K]
-        neg = neg.view(-1, self.l-self.k, self.m)
-        # [B, L-K, M]
+        neg = neg.view(-1, self.l-self.k, self.k*self.m)
+        # [B, L-K, K*M]
 
         return pos, neg
 
@@ -53,7 +53,7 @@ class BalancedSkipGramModel(nn.Module):
         self.node_embedding = nn.Parameter(torch.empty(node_num, dim))
         self.relationship_embedding = nn.Parameter(torch.empty(type_num*type_num, dim))
         nn.init.normal_(self.node_embedding.data, std=0.1)
-        nn.init.normal_(self.relationship_embedding.data, std=0.1)
+        nn.init.normal_(self.relationship_embedding.data, std=1)
 
         # Data information
         self.node_num = node_num
@@ -89,8 +89,8 @@ class BalancedSkipGramModel(nn.Module):
         neg = self.node_embedding[neg, :]
         # [B, L-K, D], [B, L-K, K, D], [B, L-K, K*M, D]
 
-        pos = torch.mul(pos, pos_pair).transpose(2, 3)
-        neg = torch.mul(neg, neg_pair).transpose(2, 3)
+        pos = torch.mul((pos/(torch.abs(pos)+1e-15)+1)/2, pos_pair).transpose(2, 3)
+        neg = torch.mul((neg/(torch.abs(neg)+1e-15)+1)/2, neg_pair).transpose(2, 3)
         # [B, L-K, D, K], [B, L-K, D, K*M]
 
         walk = walk.view(-1, 1, self.dim)

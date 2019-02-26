@@ -3,7 +3,9 @@ import pickle
 import logging
 import argparse
 import functools
+from decimal import Decimal
 from collections import defaultdict
+
 import numpy as np
 import scipy.sparse as sp
 import pandas as pd
@@ -14,11 +16,61 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+from torch.autograd import Variable
 from torch.utils.data import Dataset, DataLoader
 from tensorboardX import SummaryWriter
+from graphviz import Digraph
 
 from models import BalancedSkipGramModel
 from utils import load_data, create_graph
+
+
+def make_dot(var, params):
+    """ Produces Graphviz representation of PyTorch autograd graph
+
+    Blue nodes are the Variables that require grad, orange are Tensors
+    saved for backward in torch.autograd.Function
+
+    Args:
+        var: output Variable
+        params: dict of (name, Variable) to add names to node that
+            require grad (TODO: make optional)
+    """
+    param_map = {id(v): k for k, v in params.items()}
+    print(param_map)
+    node_attr = dict(style='filled',
+                     shape='box',
+                     align='left',
+                     fontsize='12',
+                     ranksep='0.1',
+                     height='0.2')
+    dot = Digraph(node_attr=node_attr, graph_attr=dict(size="12,12"))
+    seen = set()
+    def size_to_str(size):
+        return '('+(', ').join(['%d'% v for v in size])+')'
+
+    def add_nodes(var):
+        if var not in seen:
+            if torch.is_tensor(var):
+                dot.node(str(id(var)), size_to_str(var.size()), fillcolor='orange')
+            elif hasattr(var, 'variable'):
+                u = var.variable
+                node_name = '%s\n %s' % (param_map.get(id(u)), size_to_str(u.size()))
+                dot.node(str(id(var)), node_name, fillcolor='lightblue')
+            else:
+                dot.node(str(id(var)), str(type(var).__name__))
+            seen.add(var)
+            if hasattr(var, 'next_functions'):
+                for u in var.next_functions:
+                    if u[0] is not None:
+                        dot.edge(str(id(u[0])), str(id(var)))
+                        add_nodes(u[0])
+            if hasattr(var, 'saved_tensors'):
+                for t in var.saved_tensors:
+                    dot.edge(str(id(t)), str(id(var)))
+                    add_nodes(t)
+    add_nodes(var.grad_fn)
+    return dot
 
 
 def add_argument(parser):
@@ -29,14 +81,14 @@ def add_argument(parser):
     parser.add_argument('--d', type=int, default=128)
     parser.add_argument('--l', type=int, default=100)
     parser.add_argument('--k', type=int, default=5)
-    parser.add_argument('--m', type=int, default=25)
+    parser.add_argument('--m', type=int, default=5)
+    parser.add_argument('--l_q', type=float, default=0.05)
     parser.add_argument('--alpha', type=float, default=1)
     parser.add_argument('--restore', action='store_true')
-    parser.add_argument('--type_ignore', action='store_true')
 
 
 def get_output_name(args):
-    return 'deepwalk_%s_%d_%d_%d_%d_%d' % (args.dataset, args.d, args.l, args.k, args.m, args.alpha)
+    return 'experimental_%s_%d_%d_%d_%d_%d_%E' % (args.dataset, args.d, args.l, args.k, args.m, args.alpha, Decimal(args.l_q))
 
 
 def deepwalk(v, l, adj_data, adj_size, adj_start):
@@ -132,7 +184,7 @@ if __name__=='__main__':
     add_argument(parser)
     args = parser.parse_args()
 
-    node_type, edge_df, test_node_df, test_edge_df = load_data(args)
+    node_type, edge_df, test_node_df, _ = load_data(args)
 
     node_num = max([x[1] for x in node_type.values()]) + 1
     type_num = len(node_type)
@@ -143,10 +195,6 @@ if __name__=='__main__':
     adj_data = torch.tensor(adj_data, dtype=torch.long)
     adj_size = torch.tensor(adj_size, dtype=torch.float)
     adj_start = torch.tensor(adj_start, dtype=torch.long)
-
-    if args.type_ignore:
-        adj_size = adj_size.sum(dim=1)
-        adj_start = adj_start[:, 0]
 
     type_min = torch.tensor([node_type[k][0] for k in type_order], dtype=torch.float)
     type_size = torch.tensor([node_type[k][1]-node_type[k][0]+1 for k in type_order], dtype=torch.float)
@@ -161,7 +209,7 @@ if __name__=='__main__':
 
     model = BalancedSkipGramModel(node_num, type_num, args.d, args.l, args.k, args.m).to(device)
     criterion = nn.BCEWithLogitsLoss(reduction='none')
-    optimizer = optim.Adam(model.parameters(), lr=1e-3)
+    optimizer = optim.SGD(model.parameters(), lr=0.0025)
 
     # Report result (embedding result, TensorboardX)
     os.makedirs('output', exist_ok=True)
@@ -170,8 +218,12 @@ if __name__=='__main__':
     start_node = torch.arange(node_num)[adj_size.sum(dim=1)>0]
     num_iter = start_node.shape[0] // args.batch_size
 
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, args.epoch*num_iter, eta_min=1e-5)
+
     n_iter = 0
     L0 = 0.6931  # Theoretical initial loss
+
+    relationship_log = []
 
     A = torch.ones(len(type_order), len(type_order))
     for epoch in range(args.epoch):
@@ -182,11 +234,20 @@ if __name__=='__main__':
 
         training_bar = tqdm.tqdm(range(num_iter), total=num_iter, ascii=True)
         for idx in training_bar:
+            scheduler.step()
             with torch.no_grad():
                 node = start_node[idx]
                 node_type = type_indicator[node]
 
                 walk, walk_type = balancewalk(node, node_type, args.l, A, len(type_order), adj_data, adj_size, adj_start)
+
+                # Move to GPU
+                walk, walk_type = walk.to(device), walk_type.to(device)
+
+                # Make positive node
+                pos = torch.stack([walk[:, i+1:(i+args.k+1)] for i in range(args.l-args.k)], dim=1)
+                pos_type = torch.stack([walk_type[:, i+1:(i+args.k+1)] for i in range(args.l-args.k)], dim=1)
+                # [B, L-K, K]
 
                 # Make negative node
                 neg = torch.rand((args.batch_size, args.l-args.k, args.k, args.m))
@@ -198,14 +259,6 @@ if __name__=='__main__':
                 neg_type = neg_type.view(neg_type.shape[0], neg_type.shape[1], -1)
                 # [B, L-K, K, M]
 
-                # Move to GPU
-                walk, walk_type = walk.to(device), walk_type.to(device)
-
-                # Make positive node
-                pos = torch.stack([walk[:, i+1:(i+args.k+1)] for i in range(args.l-args.k)], dim=1)
-                pos_type = torch.stack([walk_type[:, i+1:(i+args.k+1)] for i in range(args.l-args.k)], dim=1)
-                # [B, L-K, K]
-
                 # Trim last walk
                 walk, walk_type = walk[:, :(args.l-args.k)], walk_type[:, :(args.l-args.k)]
                 # [B, L-K]
@@ -213,39 +266,49 @@ if __name__=='__main__':
             optimizer.zero_grad()
             pos_type_pred, neg_type_pred = model(walk, pos, neg, walk_type, pos_type, neg_type)
 
-            pos_type_true = [torch.ones_like(x) for x in pos_type]
-            neg_type_true = [torch.zeros_like(x) for x in neg_type]
+            neg_type_pred = [x.view(-1, args.m) for x in neg_type_pred]
 
-            type_pred = [torch.cat((pos, neg), dim=0) for pos, neg in zip(pos_type_pred, neg_type_pred)]
-            type_true = [torch.cat((pos, neg), dim=0) for pos, neg in zip(pos_type_true, neg_type_true)]
+            pos_type_true = [torch.ones_like(x) for x in pos_type_pred]
+            neg_type_true = [torch.zeros_like(x) for x in neg_type_pred]
 
-            loss_type_raw = [self.criterion(pred, true) for pred, true in zip(type_pred, type_true)]
+            type_pred = [torch.cat((pos.unsqueeze(1), neg), dim=1) for pos, neg in zip(pos_type_pred, neg_type_pred)]
+            type_true = [torch.cat((pos.unsqueeze(1), neg), dim=1) for pos, neg in zip(pos_type_true, neg_type_true)]
+
+            loss_type_raw = [criterion(pred, true) for pred, true in zip(type_pred, type_true)]
+            loss = torch.cat(loss_type_raw).sum()
+
+            #g = make_dot(loss, model.state_dict())
+            #g.render()
+
+            #loss_type_raw = [x.sum(dim=1) for x in loss_type_raw]
+            #tmp = [torch.mul(torch.exp(x), x) for x in loss_type_raw]
+            #for x in tmp:
+            #    assert not torch.any(torch.isnan(x))
+            #inverse_ratio = torch.cat([x.mean().unsqueeze(0) for x in tmp], dim=0)
+
             loss_type = torch.cat([x.mean().unsqueeze(0) for x in loss_type_raw], dim=0)
-            loss = torch.cat(loss_type_raw).mean()
-
-            print(loss)
-            assert False
-
-
-            loss_ratio = loss_per_type / L0
+            loss_ratio = loss_type / L0
             inverse_ratio = loss_ratio / loss_ratio.mean()
             # Small -> Well train
 
-            #A = torch.mul(type_size_matrix, inverse_ratio.view(len(type_order), len(type_order)).cpu())
             A = inverse_ratio.view(len(type_order), len(type_order)).cpu()
             A = torch.pow(A, args.alpha)
 
             writer.add_scalar('data/loss', loss, n_iter)
             for i, t1 in enumerate(type_order):
                 for j, t2 in enumerate(type_order):
-                    writer.add_scalar('data/%s%s'%(t1, t2), loss_per_type[i*len(type_order)+j], n_iter)
+                    writer.add_scalar('data/%s%s'%(t1, t2), loss_type[i*len(type_order)+j], n_iter)
                     writer.add_scalar('ratio/%s%s'%(t1, t2), inverse_ratio[i*len(type_order)+j], n_iter)
             layout = {'Loss': {'loss': ['data/%s%s'%(t1, t2) for t1 in type_order for t2 in type_order]},
                       'ratio': {'ratio': ['ratio/%s%s'%(t1, t2) for t1 in type_order for t2 in type_order]}}
             writer.add_custom_scalars(layout)
 
+            writer.add_image(tag='relationship_embedding',
+                             img_tensor=torch.where(model.relationship_embedding.detach().cpu()>=0, torch.tensor(1.), torch.tensor(0.)),
+                             global_step=n_iter,
+                             dataformats='HW')
             n_iter += 1
-            t.set_postfix(epoch=epoch, loss=loss.item())
+            training_bar.set_postfix(epoch=epoch, loss=loss.item(), learning_rate=optimizer.param_groups[0]['lr'])
 
             loss.backward()
             optimizer.step()

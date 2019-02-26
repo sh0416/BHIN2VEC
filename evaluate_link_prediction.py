@@ -10,6 +10,7 @@ from sklearn import svm
 from sklearn.model_selection import KFold
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import average_precision_score, recall_score, f1_score
+from sklearn.feature_selection import SelectFromModel
 import tqdm
 
 
@@ -28,11 +29,13 @@ def main(args):
             pos_edge = edge_df[(edge_df['t1']==type1) & (edge_df['t2']==type2)]
             if len(pos_edge) > 0:
 
-                test = test_edge_df[(test_edge_df['t1']==type1) & (test_edge_df['t2']==type2)]
-                if len(test) == 0:
+                # Check if test edge is exist.
+                test = test_edge_df.get(type1+type2, None)
+                if test is None:
                     print('No test edge. skip')
                     continue
 
+                print('Evaluate link prediction (type %s - %s)' % (type1, type2))
                 type1_min_idx, type1_max_idx = node_type[type1]
                 type2_min_idx, type2_max_idx = node_type[type2]
 
@@ -62,6 +65,9 @@ def main(args):
                 y = train_idx.loc[:, 'l'].values
                 print(X.shape, y.shape)
 
+                classifier = LogisticRegression(solver='liblinear', class_weight='balanced').fit(X, y)
+                model = SelectFromModel(classifier, prefit=True)
+                X = model.transform(X)
                 classifier = LogisticRegression(solver='liblinear', class_weight='balanced').fit(X, y)
 
                 print('Evaluation start')
@@ -99,12 +105,14 @@ def main(args):
                         else:
                             X = np.abs(embedding[i, :] - embedding[candidate, :])
 
+                        X = model.transform(X)
                         y_pred = classifier.predict_proba(X)
                         y_pred = np.argsort(y_pred[:, 0])[:10]
                         if 0 in y_pred:
                             hit += 1
                         count += 1
                         t.set_postfix(recall=hit/count)
+                print('Result: %.4f' % (hit/count))
 
 
 if __name__=='__main__':

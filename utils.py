@@ -87,8 +87,19 @@ def load_data(args):
         with open(os.path.join(root, 'douban_movie', 'node_type.pickle'), 'rb') as f:
             node_type = pickle.load(f)
         edge_df = pd.read_csv(os.path.join(root, 'douban_movie', 'edge.csv'), sep='\t', usecols=['v1', 'v2', 't1', 't2'])
-        test_edge_df = pd.read_csv(os.path.join(root, 'douban_movie', 'test_user_movie.csv'), sep='\t', usecols=['v1', 'v2', 't1', 't2'])
-        test_node_df = {'M': pd.read_csv(os.path.join(root, 'douban_movie', 'movie_label.csv'), sep='\t')}
+        test_edge_df = {'UM': pd.read_csv(os.path.join(root, 'douban_movie', 'link_prediction', 'test_user_movie.csv'),
+                                          sep='\t',
+                                          usecols=['v1', 'v2', 't1', 't2']),
+                        'UU': pd.read_csv(os.path.join(root, 'douban_movie', 'link_prediction', 'test_user_user.csv'),
+                                          sep='\t',
+                                          usecols=['v1', 'v2', 't1', 't2']),
+                        'MA': pd.read_csv(os.path.join(root, 'douban_movie', 'link_prediction', 'test_movie_actor.csv'),
+                                          sep='\t',
+                                          usecols=['v1', 'v2', 't1', 't2']),
+                        'MD': pd.read_csv(os.path.join(root, 'douban_movie', 'link_prediction', 'test_movie_director.csv'),
+                                          sep='\t',
+                                          usecols=['v1', 'v2', 't1', 't2'])}
+        test_node_df = {'M': pd.read_csv(os.path.join(root, 'douban_movie', 'node_classification', 'movie_label.csv'), sep='\t')}
 
     return node_type, edge_df, test_node_df, test_edge_df
 
