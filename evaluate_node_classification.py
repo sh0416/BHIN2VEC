@@ -40,6 +40,7 @@ def main(args):
     for k in test_node_df.keys():
         idx = test_node_df[k][k].values
         for c in test_node_df[k].columns:
+            print(c, k)
             if c == k:
                 continue
 
@@ -56,7 +57,7 @@ def main(args):
 if __name__=='__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--root', type=str, default='data')
-    parser.add_argument('--dataset', type=str, default='dblp', choices=['douban_movie', 'dblp', 'yelp'])
+    parser.add_argument('--dataset', type=str, default='dblp', choices=['douban_movie', 'aminer', 'dblp', 'yelp'])
     parser.add_argument('--embedding', type=str, default='output')
     args = parser.parse_args()
 

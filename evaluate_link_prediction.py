@@ -10,8 +10,99 @@ from sklearn import svm
 from sklearn.model_selection import KFold
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import average_precision_score, recall_score, f1_score
-from sklearn.feature_selection import SelectFromModel
 import tqdm
+
+
+def create_negative_train_data(train_edge, src_type, tgt_type, node_type, src_vertex, tgt_vertex):
+    src_type_min_idx, src_type_max_idx = node_type[src_type]
+    tgt_type_min_idx, tgt_type_max_idx = node_type[tgt_type]
+
+    # Create sample negative
+    src_type_sampled_idx = np.random.randint(src_type_min_idx, src_type_max_idx, size=(2*len(train_edge),))
+    tgt_type_sampled_idx = np.random.randint(tgt_type_min_idx, tgt_type_max_idx, size=(2*len(train_edge),))
+
+    # Create dataframe
+    train_edge_negative = np.vstack((src_type_sampled_idx, tgt_type_sampled_idx)).T
+    train_edge_negative = pd.DataFrame(train_edge_negative, columns=[src_vertex, tgt_vertex])
+
+    # Remove overlapped edge
+    overlapped_idx = train_edge_negative.reset_index().merge(train_edge, on=list(train_edge.columns)).set_index('index')
+    train_edge_negative = train_edge_negative.drop(overlapped_idx.index, axis=0)
+    train_edge_negative = train_edge_negative[:len(train_edge)]
+    return train_edge_negative
+
+
+def create_edge_embedding(embedding, edge, src_vertex, tgt_vertex, vector_f):
+    if vector_f == 'hadamard':
+        return embedding[edge.loc[:, src_vertex]] * embedding[edge.loc[:, tgt_vertex]]
+    elif vector_f == 'average':
+        return (embedding[edge.loc[:, src_vertex]] + embedding[edge.loc[:, tgt_vertex]]) / 2
+    elif vector_f == 'minus':
+        return (embedding[edge.loc[:, src_vertex]] - embedding[edge.loc[:, tgt_vertex]])
+    else:
+        raise Exception('Invalid vector function')
+
+
+def evaluate(node_embedding, train_edge, test_edge, src_type, tgt_type, node_type, vector_f):
+    assert len(train_edge['t1'].unique()) == 1
+    assert len(train_edge['t2'].unique()) == 1
+    if train_edge['t1'].unique()[0] == src_type and train_edge['t2'].unique()[0] == tgt_type:
+        src_vertex = 'v1'
+        tgt_vertex = 'v2'
+    elif train_edge['t1'].unique()[0] == tgt_type and train_edge['t2'].unique()[0] == src_type:
+        src_vertex = 'v2'
+        tgt_vertex = 'v1'
+    else:
+        raise Exception("source type and target type doesn't match")
+
+    train_edge = train_edge[[src_vertex, tgt_vertex]]
+    train_edge_negative = create_negative_train_data(train_edge, src_type, tgt_type, node_type, src_vertex, tgt_vertex)
+
+    # Add label
+    train_edge['l'] = 1
+    train_edge_negative['l'] = 0
+    train_edge = pd.concat((train_edge, train_edge_negative), axis=0)
+
+    # Create edge embedding
+    X = create_edge_embedding(node_embedding, train_edge, src_vertex, tgt_vertex, vector_f)
+    y = train_edge.loc[:, 'l'].values
+
+    # Train classifier
+    classifier = LogisticRegression(solver='liblinear', class_weight='balanced').fit(X, y)
+
+    # Evaluation protocol
+    src_type_min_idx, src_type_max_idx = node_type[src_type]
+    tgt_type_min_idx, tgt_type_max_idx = node_type[tgt_type]
+
+    test_set = test_edge.groupby(src_vertex)[tgt_vertex].apply(set)
+    train_set = train_edge.groupby(src_vertex)[tgt_vertex].apply(set)
+    total_set = test_set.reset_index().merge(train_set.reset_index(), on=src_vertex).set_index(src_vertex)
+    total_set = total_set.apply(lambda x: set().union(x[tgt_vertex+'_x'], x[tgt_vertex+'_y']), axis=1)
+    unobserved_list = total_set.apply(lambda x: np.random.choice(list(set(range(tgt_type_min_idx, tgt_type_max_idx+1)) - x), size=99))
+
+    # Remove test node which doesn't observed in the training time
+    test_set = test_set[total_set.index]
+
+
+    hit, count = 0, 0
+    # For each test edge,
+    t = tqdm.tqdm(test_set.iteritems(), total=len(test_set), ascii=True)
+    for i, label in t:
+        for true in label:
+            candidate = unobserved_list[i]
+            candidate_edge = np.concatenate([[true], candidate])
+            candidate_edge = pd.DataFrame(candidate_edge, columns=[tgt_vertex])
+            candidate_edge[src_vertex] = i
+
+            X = create_edge_embedding(node_embedding, candidate_edge, src_vertex, tgt_vertex, vector_f)
+
+            y_pred = classifier.predict_proba(X)
+            y_pred = np.argsort(y_pred[:, 0])[:10]
+            if 0 in y_pred:
+                hit += 1
+            count += 1
+            t.set_postfix(hit_rate=hit/count)
+    return hit/count
 
 
 def main(args):
@@ -26,99 +117,36 @@ def main(args):
 
     for type_idx1, type1 in enumerate(type_order):
         for type_idx2, type2 in enumerate(type_order):
-            pos_edge = edge_df[(edge_df['t1']==type1) & (edge_df['t2']==type2)]
-            if len(pos_edge) > 0:
+            train_edge = edge_df[(edge_df['t1']==type1) & (edge_df['t2']==type2)]
+            test_edge = test_edge_df.get(type1+type2, None)
+            if len(train_edge) == 0 or test_edge is None:
+                continue
 
-                # Check if test edge is exist.
-                test = test_edge_df.get(type1+type2, None)
-                if test is None:
-                    print('No test edge. skip')
-                    continue
+            # 두 타입이 같으면 반대 방향 에지도 포함
+            if type1 == type2:
+                train_edge2 = train_edge.copy()
+                train_edge2.columns = ['v2', 'v1', 't2', 't1']
+                train_edge = pd.concat((train_edge, train_edge2), axis=0, sort=False)
+                train_edge = train_edge.drop_duplicates()
 
-                print('Evaluate link prediction (type %s - %s)' % (type1, type2))
-                type1_min_idx, type1_max_idx = node_type[type1]
-                type2_min_idx, type2_max_idx = node_type[type2]
+                test_edge2 = test_edge.copy()
+                test_edge2.columns = ['v2', 'v1', 't2', 't1']
+                test_edge = pd.concat((test_edge, test_edge2), axis=0, sort=False)
+                test_edge = test_edge.drop_duplicates()
 
-                pos_train_idx = pos_edge[['v1', 'v2']]
+            result = evaluate(embedding, train_edge, test_edge, type1, type2, node_type, args.vector_f)
+            print('Evaluate link prediction (Source type %s - Target type %s) Result: %.4f' % (type1, type2, result))
 
-                type1_sampled_idx = np.random.randint(type1_min_idx, type1_max_idx, size=(2*len(pos_train_idx),))
-                type2_sampled_idx = np.random.randint(type2_min_idx, type2_max_idx, size=(2*len(pos_train_idx),))
-                neg_train_idx = np.vstack((type1_sampled_idx, type2_sampled_idx)).T
-                neg_train_idx = pd.DataFrame(neg_train_idx, columns=['v1', 'v2'])
-
-                overlapped_idx = neg_train_idx.reset_index().merge(pos_train_idx, on=list(pos_train_idx.columns)).set_index('index')
-                neg_train_idx = neg_train_idx.drop(overlapped_idx.index, axis=0)
-                neg_train_idx = neg_train_idx[:len(pos_train_idx)]
-
-                pos_train_idx['l'] = 1
-                neg_train_idx['l'] = 0
-                train_idx = pd.concat((pos_train_idx, neg_train_idx), axis=0)
-
-                if args.vector_f == 'hadamard':
-                    X = embedding[train_idx.loc[:, 'v1']] * embedding[train_idx.loc[:, 'v2']]
-                elif args.vector_f == 'average':
-                    X = (embedding[train_idx.loc[:, 'v1']] + embedding[train_idx.loc[:, 'v2']]) / 2
-                elif args.vector_f == 'minus':
-                    X = (embedding[train_idx.loc[:, 'v1']] - embedding[train_idx.loc[:, 'v2']])
-                else:
-                    X = np.abs(embedding[train_idx.loc[:, 'v1']] - embedding[train_idx.loc[:, 'v2']])
-                y = train_idx.loc[:, 'l'].values
-                print(X.shape, y.shape)
-
-                classifier = LogisticRegression(solver='liblinear', class_weight='balanced').fit(X, y)
-                model = SelectFromModel(classifier, prefit=True)
-                X = model.transform(X)
-                classifier = LogisticRegression(solver='liblinear', class_weight='balanced').fit(X, y)
-
-                print('Evaluation start')
-                if type1 == type2:
-                    test2 = test.copy()
-                    test2.columns = ['v2', 'v1', 't2', 't1']
-                    test = pd.concat((test, test2), axis=0, sort=False)
-                    test = test.drop_duplicates()
-
-                    pos_edge2 = pos_edge.copy()
-                    pos_edge2.columns = ['v2', 'v1', 't2', 't1']
-                    pos_edge = pd.concat((pos_edge, pos_edge2), axis=0, sort=False)
-                    pos_edge = pos_edge.drop_duplicates()
-
-                test = test.groupby('v1')['v2'].apply(set)
-                pos_edge = pos_edge.groupby('v1')['v2'].apply(set)
-                total_edge = test.reset_index().merge(pos_edge.reset_index(), on='v1').set_index('v1')
-                test = test[total_edge.index]
-                total_edge['v2'] = total_edge.apply(lambda x: set().union(x['v2_x'], x['v2_y']), axis=1)
-
-                hit, count = 0, 0
-                t = tqdm.tqdm(test.iteritems(), total=len(test), ascii=True)
-                for i, label in t:
-                    for true in label:
-                        unobserved_node = list(set(range(type2_min_idx, type2_max_idx+1))-set(total_edge.loc[i, 'v2']))
-                        candidate = np.random.choice(unobserved_node, size=min([99, len(unobserved_node)]))
-                        candidate = np.concatenate([[true], candidate])
-
-                        if args.vector_f == 'hadamard':
-                            X = embedding[i, :] * embedding[candidate, :]
-                        elif args.vector_f == 'average':
-                            X = (embedding[i, :] + embedding[candidate, :]) / 2
-                        elif args.vector_f == 'minus':
-                            X = (embedding[i, :] - embedding[candidate, :])
-                        else:
-                            X = np.abs(embedding[i, :] - embedding[candidate, :])
-
-                        X = model.transform(X)
-                        y_pred = classifier.predict_proba(X)
-                        y_pred = np.argsort(y_pred[:, 0])[:10]
-                        if 0 in y_pred:
-                            hit += 1
-                        count += 1
-                        t.set_postfix(recall=hit/count)
-                print('Result: %.4f' % (hit/count))
+            result = evaluate(embedding, train_edge, test_edge, type2, type1, node_type, args.vector_f)
+            print('Evaluate link prediction (Source type %s - Target type %s) Result: %.4f' % (type2, type1, result))
+            
+            
 
 
 if __name__=='__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--root', type=str, default='data')
-    parser.add_argument('--dataset', type=str, default='dblp', choices=['blog', 'douban_movie', 'dblp', 'yelp'])
+    parser.add_argument('--dataset', type=str, default='dblp', choices=['douban_movie', 'aminer', 'blog', 'dblp', 'yelp'])
     parser.add_argument('--embedding', type=str, required=True)
     parser.add_argument('--vector_f', type=str, default='hadamard', choices=['hadamard', 'average', 'minus', 'abs_minus'])
     parser.add_argument('--result', type=str, default='')

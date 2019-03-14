@@ -57,36 +57,75 @@ def preprocess(node_df_dict, edge_df_dict):
 
 def load_data(args):
     root = args.root
-    node_df_dict = {}
-    edge_df_dict = {}
     if args.dataset == 'dblp':
-        node_df_dict['A'] = pd.read_csv(os.path.join(root, 'dblp', 'author.txt'), sep='\t', header=None, names=['index', 'A', 'L'])
-        node_df_dict['P'] = pd.read_csv(os.path.join(root, 'dblp', 'paper.txt'), sep='\t', header=None, names=['index', 'P', 'L'])
-        node_df_dict['T'] = pd.read_csv(os.path.join(root, 'dblp', 'topic.txt'), sep='\t', header=None, names=['index', 'T'])
-        node_df_dict['V'] = pd.read_csv(os.path.join(root, 'dblp', 'venue.txt'), sep='\t', header=None, names=['index', 'V', 'L'])
-        edge_df_dict['AP'] = pd.read_csv(os.path.join(root, 'dblp', 'write.txt'), sep='\t', header=None)
-        edge_df_dict['VP'] = pd.read_csv(os.path.join(root, 'dblp', 'publish.txt'), sep='\t', header=None)
-        edge_df_dict['PT'] = pd.read_csv(os.path.join(root, 'dblp', 'mention.txt'), sep='\t', header=None)
-        edge_df_dict['PP'] = pd.read_csv(os.path.join(root, 'dblp', 'cite.txt'), sep='\t', header=None)
-    elif args.dataset == 'yelp':
-        node_df_dict['U'] = pd.read_csv(os.path.join(root, 'yelp', 'node', 'U.csv'), sep='\t')
-        node_df_dict['B'] = pd.read_csv(os.path.join(root, 'yelp', 'node', 'B.csv'), sep='\t')
-        node_df_dict['R'] = pd.read_csv(os.path.join(root, 'yelp', 'node', 'R.csv'), sep='\t')
-        node_df_dict['W'] = pd.read_csv(os.path.join(root, 'yelp', 'node', 'W.csv'), sep='\t', keep_default_na=False)
-        edge_df_dict['RU'] = pd.read_csv(os.path.join(root, 'yelp', 'edge', 'RU.csv'), sep='\t')
-        edge_df_dict['RB'] = pd.read_csv(os.path.join(root, 'yelp', 'edge', 'RB.csv'), sep='\t')
-        edge_df_dict['RW'] = pd.read_csv(os.path.join(root, 'yelp', 'edge', 'RW.csv'), sep='\t')
-        edge_df_dict['UU'] = pd.read_csv(os.path.join(root, 'yelp', 'edge', 'UU.csv'), sep='\t')
+        node_type = {'A': (0, 11019), 'T': (11020, 14013), 'V': (14014, 14104), 'P': (14105, 30455)}
+        write = pd.read_csv(os.path.join(root, 'dblp', 'write.txt'), sep='\t', names=['v1', 'v2'])
+        write['t1'] = 'A'
+        write['t2'] = 'P'
+        publish = pd.read_csv(os.path.join(root, 'dblp', 'publish.txt'), sep='\t', names=['v1', 'v2'])
+        publish['t1'] = 'V'
+        publish['t2'] = 'P'
+        mention = pd.read_csv(os.path.join(root, 'dblp', 'mention.txt'), sep='\t', names=['v1', 'v2'])
+        mention['t1'] = 'P'
+        mention['t2'] = 'T'
+        cite = pd.read_csv(os.path.join(root, 'dblp', 'cite.txt'), sep='\t', names=['v1', 'v2'])
+        cite['t1'] = 'P'
+        cite['t2'] = 'P'
+        edge_df = pd.concat((write, publish, mention, cite), axis=0)
+        test_edge_df = {}
+        test_node_df = {'A': pd.read_csv(os.path.join(root, 'dblp', 'author.txt'),
+                                         sep='\t',
+                                         header=None,
+                                         usecols=['A', 'L'],
+                                         names=['A', 'description', 'L']),
+                        'P': pd.read_csv(os.path.join(root, 'dblp', 'paper.txt'),
+                                         sep='\t',
+                                         header=None,
+                                         usecols=['P', 'L'],
+                                         names=['P', 'description', 'L']),
+                        'V': pd.read_csv(os.path.join(root, 'dblp', 'venue.txt'),
+                                         sep='\t',
+                                         header=None,
+                                         usecols=['V', 'L'],
+                                         names=['V', 'description', 'L'])}
     elif args.dataset == 'blog':
         node_df_dict['U'] = pd.read_csv(os.path.join(root, 'blog-catalog', 'nodes.csv'), header=None, names=['index'])
         node_df_dict['G'] = pd.read_csv(os.path.join(root, 'blog-catalog', 'groups.csv'), header=None, names=['index'])
         edge_df_dict['UU'] = pd.read_csv(os.path.join(root, 'blog-catalog', 'edges.csv'), sep=',', header=None)
         edge_df_dict['UG'] = pd.read_csv(os.path.join(root, 'blog-catalog', 'group-edges.csv'), sep=',', header=None)
         node_df, edge_df, test_edge_df = preprocess(node_df_dict, edge_df_dict)
+    elif args.dataset == 'aminer':
+        with open(os.path.join(root, 'aminer', 'node_type.pickle'), 'rb') as f:
+            node_type = pickle.load(f)
+        edge_df = pd.read_csv(os.path.join(root, 'aminer', 'edge.csv'), sep='\t', usecols=['v1', 'v2', 't1', 't2'])
+        test_node_df = {'P': pd.read_csv(os.path.join(root, 'aminer', 'node_classification', 'paper_label.csv'),
+                                         sep='\t',
+                                         usecols=['P', 'L'])}
+        test_edge_df = {'PA': pd.read_csv(os.path.join(root, 'aminer', 'link_prediction', 'test_paper_author.csv'),
+                                          sep='\t',
+                                          usecols=['v1', 'v2', 't1', 't2']),
+                        'PC': pd.read_csv(os.path.join(root, 'aminer', 'link_prediction', 'test_paper_conf.csv'),
+                                          sep='\t',
+                                          usecols=['v1', 'v2', 't1', 't2']),
+                        'PR': pd.read_csv(os.path.join(root, 'aminer', 'link_prediction', 'test_paper_reference.csv'),
+                                          sep='\t',
+                                          usecols=['v1', 'v2', 't1', 't2'])}
+    elif args.dataset == 'yelp':
+        with open(os.path.join(root, 'yelp', 'node_type.pickle'), 'rb') as f:
+            node_type = pickle.load(f)
+        edge_df = pd.read_csv(os.path.join(root, 'yelp', 'edge.csv'), sep='\t', usecols=['v1', 'v2', 't1', 't2'])
+        test_node_df = {'B': pd.read_csv(os.path.join(root, 'yelp', 'node_classification', 'business_category.csv'),
+                                         sep='\t',
+                                         usecols=['B', 'L']),
+                        'C': pd.read_csv(os.path.join(root, 'yelp', 'node_classification', 'city_state.csv'),
+                                         sep='\t',
+                                         usecols=['C', 'L'])}
+        test_edge_df = {}
     elif args.dataset == 'douban_movie':
         with open(os.path.join(root, 'douban_movie', 'node_type.pickle'), 'rb') as f:
             node_type = pickle.load(f)
         edge_df = pd.read_csv(os.path.join(root, 'douban_movie', 'edge.csv'), sep='\t', usecols=['v1', 'v2', 't1', 't2'])
+        test_node_df = {}
         test_edge_df = {'UM': pd.read_csv(os.path.join(root, 'douban_movie', 'link_prediction', 'test_user_movie.csv'),
                                           sep='\t',
                                           usecols=['v1', 'v2', 't1', 't2']),
@@ -99,8 +138,6 @@ def load_data(args):
                         'MD': pd.read_csv(os.path.join(root, 'douban_movie', 'link_prediction', 'test_movie_director.csv'),
                                           sep='\t',
                                           usecols=['v1', 'v2', 't1', 't2'])}
-        test_node_df = {'M': pd.read_csv(os.path.join(root, 'douban_movie', 'node_classification', 'movie_label.csv'), sep='\t')}
-
     return node_type, edge_df, test_node_df, test_edge_df
 
 

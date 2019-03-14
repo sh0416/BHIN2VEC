@@ -87,7 +87,17 @@ def convert_metapath2vec(args):
         for idx, v in edge_df.groupby(by=['v2', 't1'])['v1'].apply(set).iteritems():
             graph[idx[0]][idx[1]] = graph[idx[0]][idx[1]].union(v)
 
-        type_mapping = {'U': 'v', 'M': 'a', 'A': 'i', 'D': 'f'}
+        if args.dataset == 'douban_movie':
+            type_mapping = {'U': 'v', 'M': 'a', 'A': 'i', 'D': 'f'}
+        elif args.dataset == 'yelp':
+            type_mapping = {'U': 'v', 'B': 'a', 'C': 'i', 'W': 'f'}
+        elif args.dataset == 'dblp':
+            type_mapping = {'A': 'v', 'P': 'a', 'T': 'i', 'V': 'f'}
+        elif args.dataset == 'aminer':
+            type_mapping = {'A': 'v', 'P': 'a', 'R': 'i', 'C': 'f'}
+        else:
+            raise Exception()
+
         walks = []
         node = set()
         with open(os.path.join('other-method', 'metapath2vec', '%s.randomwalk' % (args.dataset)), 'w') as f:
@@ -139,7 +149,7 @@ if __name__=='__main__':
     parser.add_argument('--root', type=str, default='data')
     parser.add_argument('--model', type=str, default='deepwalk', choices=['deepwalk', 'LINE', 'metapath2vec', 'hin2vec'])
     parser.add_argument('--metapath', type=str)
-    parser.add_argument('--dataset', type=str, default='dblp', choices=['blog', 'douban_movie', 'dblp', 'yelp'])
+    parser.add_argument('--dataset', type=str, default='dblp', choices=['douban_movie', 'aminer', 'blog', 'dblp', 'yelp'])
     parser.add_argument('--reverse', action='store_true')
     args = parser.parse_args()
 

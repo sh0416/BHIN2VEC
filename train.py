@@ -37,7 +37,6 @@ def make_dot(var, params):
             require grad (TODO: make optional)
     """
     param_map = {id(v): k for k, v in params.items()}
-    print(param_map)
     node_attr = dict(style='filled',
                      shape='box',
                      align='left',
@@ -75,20 +74,19 @@ def make_dot(var, params):
 
 def add_argument(parser):
     parser.add_argument('--root', type=str, default='data')
-    parser.add_argument('--dataset', type=str, default='dblp', choices=['blog', 'douban_movie', 'dblp', 'yelp'])
+    parser.add_argument('--dataset', type=str, default='dblp', choices=['blog', 'aminer', 'douban_movie', 'dblp', 'yelp'])
     parser.add_argument('--epoch', type=int, default=10)
     parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--d', type=int, default=128)
     parser.add_argument('--l', type=int, default=100)
     parser.add_argument('--k', type=int, default=5)
     parser.add_argument('--m', type=int, default=5)
-    parser.add_argument('--l_q', type=float, default=0.05)
     parser.add_argument('--alpha', type=float, default=1)
     parser.add_argument('--restore', action='store_true')
 
 
 def get_output_name(args):
-    return 'experimental_%s_%d_%d_%d_%d_%d_%E' % (args.dataset, args.d, args.l, args.k, args.m, args.alpha, Decimal(args.l_q))
+    return 'experimental_%s_%d_%d_%d_%d_%d' % (args.dataset, args.d, args.l, args.k, args.m, args.alpha)
 
 
 def deepwalk(v, l, adj_data, adj_size, adj_start):
@@ -115,131 +113,117 @@ def deepwalk(v, l, adj_data, adj_size, adj_start):
     return torch.stack(walk).t()
 
 
-def balancewalk(v, v_t, l, A, t, adj_data, adj_size, adj_start):
-    """Random walk
-
-    Args:
-        v (torch.LongTensor): [Batch_size] start index.
-        v_t (torch.LongTensor): [Batch_size] type of start node.
-        l (int): length of random walk.
-        A (torch.FloatTensor)): [T, T] inverse training rate matrix.
-        t (int): number of type
-        adj_data (torch.LongTensor): [E] data bank for adjacency list.
-        adj_size (torch.FloatTensor): [V] degree for each node.
-        adj_start (torch.LongTensor): [V] start index for each node in `adj_data`.
-    Returns:
-        torch.LongTensor [L, B]
-        torch.LongTensor [L, B]
-    """
-    walk = [None] * l
-    walk_type = [None] * l
-    node = v
-    node_type = v_t
-    walk[0] = node
-    walk_type[0] = node_type
-
-    # Initialize data structure
-    context_matrix = A.new_zeros(v.shape[0], t, t)
-    go_vector = A.new_zeros(v.shape[0], t)
-    back_vector = A.new_zeros(v.shape[0], t)
+def biased_walk(node, node_t, l, stochastic_matrix, adj_data, adj_size, adj_start):
+    walk, walk_t = [None] * l, [None] * l
+    walk[0], walk_t[0] = node, node_t
 
     for i in range(1, l):
-        # Process 1
-        back_vector.scatter_(dim=1, index=node_type.unsqueeze(1), src=torch.tensor(0))
-        node_type_stack = torch.stack([node_type]*len(type_order)).t()
+        # Previous node and node type
+        node = walk[i-1]
+        node_t = walk_t[i-1]
 
-        # Process 2
-        back_vector += context_matrix.gather(dim=2, index=node_type_stack.unsqueeze(2)).squeeze(2)
-        context_matrix.scatter_(dim=2, index=node_type_stack.unsqueeze(2), src=torch.tensor(0))
-        go_vector.scatter_(dim=1, index=node_type.unsqueeze(1), src=torch.tensor(0))
+        # Sample current node type
+        weight = stochastic_matrix[node_t, :]
+        weight = weight * (adj_size[node]>0).float()
+        node_nxt_t = torch.multinomial(weight, 1)
 
-        # Process 3
-        src = torch.stack([A]*v.shape[0]).gather(dim=1, index=node_type_stack.unsqueeze(1))
-        context_matrix.scatter_add_(dim=1, index=node_type_stack.unsqueeze(1), src=src)
-        go_vector += src.squeeze(1)
+        # Sample current node
+        start_t = adj_start[node].gather(dim=1, index=node_nxt_t)
+        size_t = adj_size[node].gather(dim=1, index=node_nxt_t)
+        assert not torch.any(size_t == 0)
 
-        # Process 4
-        weight = go_vector + back_vector
-        weight = weight * (adj_size[node] > 0).float()
-        node_type = torch.multinomial(weight, 1).squeeze(1)
+        offset_t = torch.floor(torch.rand_like(size_t) * size_t).long()
+        idx = start_t + offset_t
 
-        adj_size_type = adj_size[node].gather(dim=1, index=node_type.unsqueeze(1)).squeeze(1)
-        assert not torch.any(adj_size_type == 0)
+        node_nxt = adj_data[idx].squeeze(1)
+        node_nxt_t = node_nxt_t.squeeze(1)
 
-        offset = torch.floor(torch.rand_like(node, dtype=torch.float) * adj_size_type).long()
-
-        adj_start_type = adj_start[node].gather(dim=1, index=node_type.unsqueeze(1)).squeeze(1)
-        idx = adj_start_type + offset
-
-        node = adj_data[idx]
-        walk[i] = node
-        walk_type[i] = node_type
-    return torch.stack(walk).t(), torch.stack(walk_type).t()
+        walk[i] = node_nxt
+        walk_t[i] = node_nxt_t
+    return torch.stack(walk).t(), torch.stack(walk_t).t()
 
 
-if __name__=='__main__':
+def main(args):
+    torch.set_printoptions(precision=5)
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-
-    parser = argparse.ArgumentParser()
-    add_argument(parser)
-    args = parser.parse_args()
 
     node_type, edge_df, test_node_df, _ = load_data(args)
 
+    # Node metadata
     node_num = max([x[1] for x in node_type.values()]) + 1
+
+    # Type metadata
     type_num = len(node_type)
     type_order = list(node_type.keys())
-
-    adj_data, adj_size, adj_start = create_graph(edge_df, node_num, type_order)
-
-    adj_data = torch.tensor(adj_data, dtype=torch.long)
-    adj_size = torch.tensor(adj_size, dtype=torch.float)
-    adj_start = torch.tensor(adj_start, dtype=torch.long)
-
     type_min = torch.tensor([node_type[k][0] for k in type_order], dtype=torch.float)
     type_size = torch.tensor([node_type[k][1]-node_type[k][0]+1 for k in type_order], dtype=torch.float)
-
     type_indicator = torch.zeros(node_num, dtype=torch.long)
     for idx, k in enumerate(type_order):
         type_indicator[node_type[k][0]:node_type[k][1]+1] = idx
     type_indicator_gpu = type_indicator.to(device)
 
+    # Create graph
+    adj_data, adj_size, adj_start = create_graph(edge_df, node_num, type_order)
+    adj_data = torch.tensor(adj_data, dtype=torch.long)
+    adj_size = torch.tensor(adj_size, dtype=torch.float)
+    adj_start = torch.tensor(adj_start, dtype=torch.long)
+    assert torch.all(adj_size.sum(dim=1) > 0)
+
     print("Type:", type_order)
     print("Node:", node_num, ", Edge: ", len(edge_df))
 
+    node_idx = torch.arange(node_num)
+    num_iter = node_idx.shape[0] // args.batch_size
+
     model = BalancedSkipGramModel(node_num, type_num, args.d, args.l, args.k, args.m).to(device)
     criterion = nn.BCEWithLogitsLoss(reduction='none')
-    optimizer = optim.SGD(model.parameters(), lr=0.0025)
+    optimizer = optim.Adam(model.parameters(), lr=0.0025)
 
     # Report result (embedding result, TensorboardX)
     os.makedirs('output', exist_ok=True)
     writer = SummaryWriter(os.path.join('runs', get_output_name(args)))
 
-    start_node = torch.arange(node_num)[adj_size.sum(dim=1)>0]
-    num_iter = start_node.shape[0] // args.batch_size
+    # Theoretical initial loss
+    L0 = 0.6931
 
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, args.epoch*num_iter, eta_min=1e-5)
+    # Meta adjacency matrix
+    meta_adjacency_matrix = torch.zeros(len(type_order), len(type_order), dtype=torch.float).cuda()
+    edge_type = edge_df[['t1', 't2']].apply(lambda x: (x['t1'], x['t2']), axis=1).unique()
+    for t1, t2 in edge_type:
+        meta_adjacency_matrix[type_order.index(t1), type_order.index(t2)] = 1
+        meta_adjacency_matrix[type_order.index(t2), type_order.index(t1)] = 1
 
+    # Possible tensor
+    possible_tensor = torch.zeros(args.k, len(type_order), len(type_order))
+    tmp = meta_adjacency_matrix
+    for i in range(args.k):
+        possible_tensor[i] = tmp
+        tmp = torch.mm(tmp, meta_adjacency_matrix)
+    possible_tensor = possible_tensor > 0
+
+    # Stochastic matrix
+    stochastic_matrix = meta_adjacency_matrix
+    stochastic_matrix = stochastic_matrix / stochastic_matrix.sum(dim=1, keepdim=True)
+    stochastic_matrix = stochastic_matrix.clone().detach().requires_grad_(True)
+
+    # Loss 저장
+    previous_case_loss = torch.full((args.k, len(type_order), len(type_order)), fill_value=0.6931)
+
+    # Counter
     n_iter = 0
-    L0 = 0.6931  # Theoretical initial loss
-
-    relationship_log = []
-
-    A = torch.ones(len(type_order), len(type_order))
     for epoch in range(args.epoch):
         # Shuffle start node
         with torch.no_grad():
-            random_idx = torch.randperm(start_node.shape[0])
-            start_node = start_node[random_idx][:num_iter*args.batch_size].view(num_iter, args.batch_size)
+            random_idx = torch.randperm(node_idx.shape[0])
+            node_idx_epoch = node_idx[random_idx][:num_iter*args.batch_size].view(num_iter, args.batch_size)
 
         training_bar = tqdm.tqdm(range(num_iter), total=num_iter, ascii=True)
         for idx in training_bar:
-            scheduler.step()
             with torch.no_grad():
-                node = start_node[idx]
-                node_type = type_indicator[node]
+                node = node_idx_epoch[idx]
+                node_t = type_indicator[node]
 
-                walk, walk_type = balancewalk(node, node_type, args.l, A, len(type_order), adj_data, adj_size, adj_start)
+                walk, walk_type = biased_walk(node, node_t, args.l, stochastic_matrix.cpu(), adj_data, adj_size, adj_start)
 
                 # Move to GPU
                 walk, walk_type = walk.to(device), walk_type.to(device)
@@ -255,63 +239,112 @@ if __name__=='__main__':
                 neg = neg.long()
                 neg_type = type_indicator_gpu[neg]
                 assert torch.all(torch.eq(pos_type.unsqueeze(3), neg_type))
-                neg = neg.view(neg.shape[0], neg.shape[1], -1)
-                neg_type = neg_type.view(neg_type.shape[0], neg_type.shape[1], -1)
                 # [B, L-K, K, M]
 
                 # Trim last walk
-                walk, walk_type = walk[:, :(args.l-args.k)], walk_type[:, :(args.l-args.k)]
+                walk = walk[:, :(args.l-args.k)]
+                walk_type = walk_type[:, :(args.l-args.k)]
                 # [B, L-K]
 
             optimizer.zero_grad()
-            pos_type_pred, neg_type_pred = model(walk, pos, neg, walk_type, pos_type, neg_type)
+            pos_pred, neg_pred, pos_type, neg_type = model(walk, pos, neg, walk_type, pos_type, neg_type)
 
-            neg_type_pred = [x.view(-1, args.m) for x in neg_type_pred]
+            pos_true = torch.ones_like(pos_pred)
+            neg_true = torch.zeros_like(neg_pred)
 
-            pos_type_true = [torch.ones_like(x) for x in pos_type_pred]
-            neg_type_true = [torch.zeros_like(x) for x in neg_type_pred]
+            pred = torch.cat((pos_pred, neg_pred))
+            true = torch.cat((pos_true, neg_true))
+            type_ = torch.cat((pos_type, neg_type))
 
-            type_pred = [torch.cat((pos.unsqueeze(1), neg), dim=1) for pos, neg in zip(pos_type_pred, neg_type_pred)]
-            type_true = [torch.cat((pos.unsqueeze(1), neg), dim=1) for pos, neg in zip(pos_type_true, neg_type_true)]
-
-            loss_type_raw = [criterion(pred, true) for pred, true in zip(type_pred, type_true)]
-            loss = torch.cat(loss_type_raw).sum()
-
+            loss = criterion(pred, true)
             #g = make_dot(loss, model.state_dict())
             #g.render()
 
-            #loss_type_raw = [x.sum(dim=1) for x in loss_type_raw]
-            #tmp = [torch.mul(torch.exp(x), x) for x in loss_type_raw]
-            #for x in tmp:
-            #    assert not torch.any(torch.isnan(x))
-            #inverse_ratio = torch.cat([x.mean().unsqueeze(0) for x in tmp], dim=0)
+            loss.mean().backward()
+            optimizer.step()
 
-            loss_type = torch.cat([x.mean().unsqueeze(0) for x in loss_type_raw], dim=0)
-            loss_ratio = loss_type / L0
-            inverse_ratio = loss_ratio / loss_ratio.mean()
+            n_iter += 1
+            training_bar.set_postfix(epoch=epoch,
+                    loss=loss.mean().item(),
+                    learning_rate=optimizer.param_groups[0]['lr'])
+
+            training_case_loss = torch.zeros(args.k, len(type_order), len(type_order)).cuda()
+            count = 0
+            for i in range(args.k):
+                for j in range(len(type_order)):
+                    for k in range(len(type_order)):
+                        tmp = loss[type_==count]
+                        if tmp.shape[0] > 0:
+                            training_case_loss[i, j, k] = tmp.mean()
+                        else:
+                            training_case_loss[i, j, k] = previous_case_loss[i, j, k]
+                        count += 1
+            previous_case_loss = training_case_loss.clone().detach()
+
+            loss_ratio = training_case_loss / L0
+            inverse_ratio = loss_ratio / loss_ratio[possible_tensor].mean()
             # Small -> Well train
 
-            A = inverse_ratio.view(len(type_order), len(type_order)).cpu()
-            A = torch.pow(A, args.alpha)
+            stochastic_matrix_true = torch.pow(inverse_ratio, args.alpha)
+            stochastic_matrix_true[~possible_tensor] = 0
+            stochastic_matrix_true = stochastic_matrix_true / stochastic_matrix_true.sum(dim=2, keepdim=True)
 
-            writer.add_scalar('data/loss', loss, n_iter)
-            for i, t1 in enumerate(type_order):
-                for j, t2 in enumerate(type_order):
-                    writer.add_scalar('data/%s%s'%(t1, t2), loss_type[i*len(type_order)+j], n_iter)
-                    writer.add_scalar('ratio/%s%s'%(t1, t2), inverse_ratio[i*len(type_order)+j], n_iter)
-            layout = {'Loss': {'loss': ['data/%s%s'%(t1, t2) for t1 in type_order for t2 in type_order]},
-                      'ratio': {'ratio': ['ratio/%s%s'%(t1, t2) for t1 in type_order for t2 in type_order]}}
-            writer.add_custom_scalars(layout)
+            stochastic_matrix_true = stochastic_matrix_true.clone().detach()
 
-            writer.add_image(tag='relationship_embedding',
-                             img_tensor=torch.where(model.relationship_embedding.detach().cpu()>=0, torch.tensor(1.), torch.tensor(0.)),
-                             global_step=n_iter,
-                             dataformats='HW')
-            n_iter += 1
-            training_bar.set_postfix(epoch=epoch, loss=loss.item(), learning_rate=optimizer.param_groups[0]['lr'])
+            stochastic_matrix_pred = []
+            tmp = stochastic_matrix
+            for i in range(args.k):
+                stochastic_matrix_pred.append(tmp)
+                tmp = torch.mm(tmp, stochastic_matrix)
+            stochastic_matrix_pred = torch.stack(stochastic_matrix_pred)
+            print(stochastic_matrix_true)
+            print(stochastic_matrix_pred)
+            print(stochastic_matrix_true[possible_tensor])
+            print(stochastic_matrix_pred[possible_tensor])
+            print(stochastic_matrix_true[possible_tensor]-stochastic_matrix_pred[possible_tensor])
+            print(torch.pow(stochastic_matrix_true[possible_tensor]-stochastic_matrix_pred[possible_tensor], 2))
+            loss_stochastic = torch.pow(stochastic_matrix_true[possible_tensor] - stochastic_matrix_pred[possible_tensor], 2).mean()
+            #loss_stochastic += -0.01*torch.where(stochastic_matrix<1, torch.log(stochastic_matrix), 0)
+            #g = make_dot(loss_stochastic, {})
+            #g.render()
 
-            loss.backward()
-            optimizer.step()
+            loss_stochastic.backward()
+
+            print(stochastic_matrix.grad)
+            # Update stochastic matrix
+            with torch.no_grad():
+                stochastic_matrix -= 0.1 * stochastic_matrix.grad
+                stochastic_matrix.grad.zero_()
+                stochastic_matrix[stochastic_matrix<1e-3] = 1e-3
+                stochastic_matrix = stochastic_matrix * meta_adjacency_matrix
+                stochastic_matrix = stochastic_matrix / stochastic_matrix.sum(dim=1, keepdim=True)
+            stochastic_matrix.requires_grad_(True)
+            #print('true', stochastic_matrix_true[0])
+            #print('pred', stochastic_matrix)
+
+            # Summary
+            if n_iter % 10 == 9:
+                writer.add_scalar('total/loss', loss.mean(), n_iter)
+                for t in range(args.k):
+                    for i, t1 in enumerate(type_order):
+                        for j, t2 in enumerate(type_order):
+                            writer.add_scalar('loss%d/%s%s'%(t, t1, t2), training_case_loss[t, i, j], n_iter)
+                            writer.add_scalar('ratio%d/%s%s'%(t, t1, t2), inverse_ratio[t, i, j], n_iter)
+                layout = {'loss': {'loss': ['loss%d/%s%s' % (t, t1, t2)
+                                            for t1 in type_order
+                                            for t2 in type_order
+                                            for t in range(args.k)]},
+                          'ratio': {'ratio': ['ratio%d/%s%s'%(t, t1, t2)
+                                              for t1 in type_order
+                                              for t2 in type_order
+                                              for t in range(args.k)]}}
+                writer.add_custom_scalars(layout)
+                embedding = model.relationship_embedding.detach().cpu()
+                writer.add_image(tag='relationship_embedding',
+                                 img_tensor=torch.sigmoid(embedding),
+                                 global_step=n_iter,
+                                 dataformats='HW')
+
 
         # Save embedding
         total_embedding = model.node_embedding.data
@@ -332,3 +365,11 @@ if __name__=='__main__':
         np.save(os.path.join('output', get_output_name(args)+'.npy'),
                 model.node_embedding.detach().cpu().numpy())
     writer.close()
+
+
+if __name__=='__main__':
+    parser = argparse.ArgumentParser()
+    add_argument(parser)
+    args = parser.parse_args()
+    main(args)
+

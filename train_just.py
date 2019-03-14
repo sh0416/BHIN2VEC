@@ -23,7 +23,7 @@ from utils import load_data, create_graph
 
 def add_argument(parser):
     parser.add_argument('--root', type=str, default='data')
-    parser.add_argument('--dataset', type=str, default='dblp', choices=['douban_movie', 'dblp', 'yelp'])
+    parser.add_argument('--dataset', type=str, default='dblp', choices=['douban_movie', 'aminer', 'dblp', 'yelp'])
     parser.add_argument('--alpha', type=float, default=0.5)
     parser.add_argument('--que_size', type=int, default=2)
     parser.add_argument('--epoch', type=int, default=10)
@@ -36,7 +36,7 @@ def add_argument(parser):
 
 
 def get_output_name(args):
-    name = 'just_%d_%d_%d_%d' % (args.d, args.l, args.k, args.m)
+    name = 'just_%s_%d_%d_%d_%d' % (args.dataset, args.d, args.l, args.k, args.m)
     name += '_%.2f_%d' % (args.alpha, args.que_size)
     return name
 
@@ -130,7 +130,7 @@ def main(args):
 
     model = SkipGramModel(node_num, args.d, args.l, args.k, args.m).cuda()
     criterion = nn.BCEWithLogitsLoss()
-    optimizer = optim.Adam(model.parameters(), lr=1e-3)
+    optimizer = optim.Adam(model.parameters(), lr=0.0025)
 
     if args.restore:
         embedding = np.load(os.path.join('output', get_output_name(args)+'.npy'))

@@ -51,7 +51,7 @@ class BalancedSkipGramModel(nn.Module):
         super().__init__()
         # Parameter
         self.node_embedding = nn.Parameter(torch.empty(node_num, dim))
-        self.relationship_embedding = nn.Parameter(torch.empty(type_num*type_num, dim))
+        self.relationship_embedding = nn.Parameter(torch.empty(k*type_num*type_num, dim))
         nn.init.normal_(self.node_embedding.data, std=0.1)
         nn.init.normal_(self.relationship_embedding.data, std=1)
 
@@ -71,13 +71,19 @@ class BalancedSkipGramModel(nn.Module):
         Args:
             walk (torch.LongTensor): random walk index. shape: [B, L-K]
             pos (torch.LongTensor): positive sample. shape: [B, L-K, K]
-            neg (torch.LongTensor): negative sample. shape: [B, L-K, K*M]
+            neg (torch.LongTensor): negative sample. shape: [B, L-K, K, M]
             walk_type (torch.LongTensor): type of random walk index. shape: [B, L-K]
             pos_type (torch.LongTensor): type of positive sample. shape: [B, L-K, K]
-            neg_type (torch.LongTensor): type of negative sample. shape: [B, L-K, K*M]
+            neg_type (torch.LongTensor): type of negative sample. shape: [B, L-K, K, M]
         """
+        neg = neg.view(-1, self.l-self.k, self.k*self.m)
+
         pos_pair_type = self.type_num*walk_type.unsqueeze(2)+pos_type
-        neg_pair_type = self.type_num*walk_type.unsqueeze(2)+neg_type
+        neg_pair_type = self.type_num*walk_type.unsqueeze(2).unsqueeze(3)+neg_type
+        # [B, L-K, K]
+        pos_pair_type = self.type_num*self.type_num*torch.arange(self.k).cuda().unsqueeze(0).unsqueeze(1) + pos_pair_type
+        neg_pair_type = self.type_num*self.type_num*torch.arange(self.k).cuda().unsqueeze(0).unsqueeze(1).unsqueeze(3) + neg_pair_type
+        neg_pair_type = neg_pair_type.view(-1, self.l-self.k, self.k*self.m)
         # [B, L-K, K], [B, L-K, K*M]
 
         pos_pair = self.relationship_embedding[pos_pair_type]
@@ -89,8 +95,8 @@ class BalancedSkipGramModel(nn.Module):
         neg = self.node_embedding[neg, :]
         # [B, L-K, D], [B, L-K, K, D], [B, L-K, K*M, D]
 
-        pos = torch.mul((pos/(torch.abs(pos)+1e-15)+1)/2, pos_pair).transpose(2, 3)
-        neg = torch.mul((neg/(torch.abs(neg)+1e-15)+1)/2, neg_pair).transpose(2, 3)
+        pos = torch.mul(pos, torch.sigmoid(pos_pair)).transpose(2, 3)
+        neg = torch.mul(neg, torch.sigmoid(neg_pair)).transpose(2, 3)
         # [B, L-K, D, K], [B, L-K, D, K*M]
 
         walk = walk.view(-1, 1, self.dim)
@@ -110,7 +116,10 @@ class BalancedSkipGramModel(nn.Module):
         neg = neg.view(-1, self.l-self.k, self.k*self.m)
         # [B, L-K, K*M]
 
-        pos_type = [torch.masked_select(pos, pos_pair_type==i) for i in range(self.type_num*self.type_num)]
-        neg_type = [torch.masked_select(neg, neg_pair_type==i) for i in range(self.type_num*self.type_num)]
+        pos = pos.view(-1)
+        neg = neg.view(-1)
+        pos_pair_type = pos_pair_type.view(-1)
+        neg_pair_type = neg_pair_type.view(-1)
 
-        return pos_type, neg_type
+        return pos, neg, pos_pair_type, neg_pair_type
+
