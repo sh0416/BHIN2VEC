@@ -23,7 +23,7 @@ from utils import load_data, create_graph
 
 def add_argument(parser):
     parser.add_argument('--root', type=str, default='data')
-    parser.add_argument('--dataset', type=str, default='dblp', choices=['douban_movie', 'aminer', 'dblp', 'yelp'])
+    parser.add_argument('--dataset', type=str, default='dblp', choices=['blog-catalog', 'douban_movie', 'aminer', 'dblp', 'yelp'])
     parser.add_argument('--alpha', type=float, default=0.5)
     parser.add_argument('--que_size', type=int, default=2)
     parser.add_argument('--epoch', type=int, default=10)
@@ -81,6 +81,7 @@ def justwalk(v, v_t, l, alpha, que_size, adj_data, adj_size, adj_start):
         type_jump = torch.mul(type_jump_cond, type_jump2) + torch.mul(1-type_jump_cond, type_jump)
 
         type_prob = torch.mul(stay.unsqueeze(1), type_stay) + torch.mul((1-stay).unsqueeze(1), type_jump)
+        same_domain_count = torch.where(stay==1, same_domain_count, torch.tensor(0.))
 
         v_t = torch.multinomial(type_prob, num_samples=1).squeeze(1)
 

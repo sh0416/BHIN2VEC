@@ -112,6 +112,7 @@ def main(args):
 
     node_num = max([x[1] for x in node_type.values()]) + 1
     type_order = list(node_type.keys())
+    #type_order = ['G', 'U']
 
     adj_data, adj_size, adj_start = create_graph(edge_df, node_num, type_order)
 
@@ -146,7 +147,7 @@ def main(args):
 if __name__=='__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--root', type=str, default='data')
-    parser.add_argument('--dataset', type=str, default='dblp', choices=['douban_movie', 'aminer', 'blog', 'dblp', 'yelp'])
+    parser.add_argument('--dataset', type=str, default='dblp', choices=['douban_movie', 'aminer', 'blog-catalog', 'dblp', 'yelp'])
     parser.add_argument('--embedding', type=str, required=True)
     parser.add_argument('--vector_f', type=str, default='hadamard', choices=['hadamard', 'average', 'minus', 'abs_minus'])
     parser.add_argument('--result', type=str, default='')

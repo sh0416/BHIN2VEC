@@ -1,0 +1,13 @@
+__pycache__/
+archive/
+data/
+preprocess/
+.ipynb_checkpoints/
+output/
+result/
+output_orig/
+runs/
+nohup.out
+other-method/
+*.log
+*.png

@@ -62,11 +62,13 @@ def convert_LINE(args):
 
 def convert_metapath2vec(args):
     if args.reverse:
+        node_type, _, _, _ = load_data(args)
+        node_num = sum([max_v-min_v+1 for min_v, max_v in node_type.values()])
         with open(os.path.join('other-method', 'metapath2vec', '%s.txt' % (args.dataset))) as f:
             for idx, line in enumerate(f):
                 if idx == 0:
                     data = list(map(int, line.split(' ')))
-                    embedding = np.zeros((data[0], data[1]))
+                    embedding = np.zeros((node_num, data[1]))
                 else:
                     line = line.rstrip()
                     index = line.split(' ')[0]
@@ -95,28 +97,34 @@ def convert_metapath2vec(args):
             type_mapping = {'A': 'v', 'P': 'a', 'T': 'i', 'V': 'f'}
         elif args.dataset == 'aminer':
             type_mapping = {'A': 'v', 'P': 'a', 'R': 'i', 'C': 'f'}
+        elif args.dataset == 'blog-catalog':
+            type_mapping = {'U': 'v', 'G': 'a'}
         else:
             raise Exception()
 
-        walks = []
-        node = set()
+        walk = [None] * 100
         with open(os.path.join('other-method', 'metapath2vec', '%s.randomwalk' % (args.dataset)), 'w') as f:
             for i in range(10):
-                for j in graph.keys():
+                print('Walking... %d' % i)
+                for idx, j in enumerate(graph.keys()):
                     for k, v in node_type.items():
                         if v[0]<=j and j<=v[1]:
                             metapath_type = k
+                    if metapath_type not in metapath:
+                        continue
                     metapath_idx = metapath.index(metapath_type)
-                    walk = [type_mapping[metapath_type] + str(j)]
+                    walk[0] = type_mapping[metapath_type] + str(j)
 
                     for k in range(1, 100):
                         if len(graph[int(walk[k-1][1:])][metapath[(metapath_idx+1)%len(metapath)]]) == 0:
                             break
-                        walk.append(type_mapping[metapath[(metapath_idx+1)%len(metapath)]] + \
-                                str(random.choice(list(graph[int(walk[k-1][1:])][metapath[(metapath_idx+1)%len(metapath)]]))))
+                        walk[k] = type_mapping[metapath[(metapath_idx+1)%len(metapath)]] + \
+                                str(random.choice(list(graph[int(walk[k-1][1:])][metapath[(metapath_idx+1)%len(metapath)]])))
                         metapath_idx += 1
 
-                    f.write(' '.join(walk)+'\n')
+                    if idx % 10000 == 9999:
+                        print(idx)
+                    f.write(' '.join(walk[:k])+'\n')
 
 
 def convert_hin2vec(args):
@@ -149,7 +157,7 @@ if __name__=='__main__':
     parser.add_argument('--root', type=str, default='data')
     parser.add_argument('--model', type=str, default='deepwalk', choices=['deepwalk', 'LINE', 'metapath2vec', 'hin2vec'])
     parser.add_argument('--metapath', type=str)
-    parser.add_argument('--dataset', type=str, default='dblp', choices=['douban_movie', 'aminer', 'blog', 'dblp', 'yelp'])
+    parser.add_argument('--dataset', type=str, default='dblp', choices=['douban_movie', 'aminer', 'blog-catalog', 'dblp', 'yelp'])
     parser.add_argument('--reverse', action='store_true')
     args = parser.parse_args()
 

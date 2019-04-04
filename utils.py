@@ -58,6 +58,17 @@ def preprocess(node_df_dict, edge_df_dict):
 def load_data(args):
     root = args.root
     if args.dataset == 'dblp':
+        with open(os.path.join(root, 'dblp', 'node_type.pickle'), 'rb') as f:
+            node_type = pickle.load(f)
+        edge_df = pd.read_csv(os.path.join(root, 'dblp', 'edge.csv'), sep='\t', usecols=['v1', 'v2', 't1', 't2'])
+        test_node_df = {'A': pd.read_csv(os.path.join(root, 'dblp', 'node_classification', 'author_label.csv'),
+                                         sep='\t', usecols=['index', 'L']),
+                        'P': pd.read_csv(os.path.join(root, 'dblp', 'node_classification', 'paper_label.csv'),
+                                         sep='\t', usecols=['index', 'L'])}
+        test_node_df['A'].columns = ['A', 'L']
+        test_node_df['P'].columns = ['P', 'L']
+        test_edge_df = {}
+        """
         node_type = {'A': (0, 11019), 'T': (11020, 14013), 'V': (14014, 14104), 'P': (14105, 30455)}
         write = pd.read_csv(os.path.join(root, 'dblp', 'write.txt'), sep='\t', names=['v1', 'v2'])
         write['t1'] = 'A'
@@ -88,12 +99,18 @@ def load_data(args):
                                          header=None,
                                          usecols=['V', 'L'],
                                          names=['V', 'description', 'L'])}
-    elif args.dataset == 'blog':
-        node_df_dict['U'] = pd.read_csv(os.path.join(root, 'blog-catalog', 'nodes.csv'), header=None, names=['index'])
-        node_df_dict['G'] = pd.read_csv(os.path.join(root, 'blog-catalog', 'groups.csv'), header=None, names=['index'])
-        edge_df_dict['UU'] = pd.read_csv(os.path.join(root, 'blog-catalog', 'edges.csv'), sep=',', header=None)
-        edge_df_dict['UG'] = pd.read_csv(os.path.join(root, 'blog-catalog', 'group-edges.csv'), sep=',', header=None)
-        node_df, edge_df, test_edge_df = preprocess(node_df_dict, edge_df_dict)
+        """
+    elif args.dataset == 'blog-catalog':
+        with open(os.path.join(root, 'blog-catalog', 'node_type.pickle'), 'rb') as f:
+            node_type = pickle.load(f)
+        edge_df = pd.read_csv(os.path.join(root, 'blog-catalog', 'edge.csv'), sep='\t', usecols=['v1', 'v2', 't1', 't2'])
+        test_node_df = {}
+        test_edge_df = {'UU': pd.read_csv(os.path.join(root, 'blog-catalog', 'link_prediction', 'test_user_user.csv'),
+                                          sep='\t',
+                                          usecols=['v1', 'v2', 't1', 't2']),
+                        'UG': pd.read_csv(os.path.join(root, 'blog-catalog', 'link_prediction', 'test_user_group.csv'),
+                                          sep='\t',
+                                          usecols=['v1', 'v2', 't1', 't2'])}
     elif args.dataset == 'aminer':
         with open(os.path.join(root, 'aminer', 'node_type.pickle'), 'rb') as f:
             node_type = pickle.load(f)
