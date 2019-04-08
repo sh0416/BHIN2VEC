@@ -119,19 +119,19 @@ def main(args):
     for type_idx1, type1 in enumerate(type_order):
         for type_idx2, type2 in enumerate(type_order):
             train_edge = edge_df[(edge_df['t1']==type1) & (edge_df['t2']==type2)]
-            test_edge = test_edge_df.get(type1+type2, None)
-            if len(train_edge) == 0 or test_edge is None:
+            test_edge = test_edge_df[(test_edge_df['t1']==type1) & (test_edge_df['t2']==type2)]
+            if len(train_edge) == 0 or len(test_edge) == 0:
                 continue
 
             # 두 타입이 같으면 반대 방향 에지도 포함
             if type1 == type2:
                 train_edge2 = train_edge.copy()
-                train_edge2.columns = ['v2', 'v1', 't2', 't1']
+                train_edge2.columns = [x[0]+'2' if x[1]=='1' else x[0]+'1' for x in train_edge2.columns]
                 train_edge = pd.concat((train_edge, train_edge2), axis=0, sort=False)
                 train_edge = train_edge.drop_duplicates()
 
                 test_edge2 = test_edge.copy()
-                test_edge2.columns = ['v2', 'v1', 't2', 't1']
+                test_edge2.columns = [x[0]+'2' if x[1]=='1' else x[0]+'1' for x in test_edge2.columns]
                 test_edge = pd.concat((test_edge, test_edge2), axis=0, sort=False)
                 test_edge = test_edge.drop_duplicates()
 
@@ -147,7 +147,7 @@ def main(args):
 if __name__=='__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--root', type=str, default='data')
-    parser.add_argument('--dataset', type=str, default='dblp', choices=['douban_movie', 'aminer', 'blog-catalog', 'dblp', 'yelp'])
+    parser.add_argument('--dataset', type=str, default='dblp', choices=['douban_movie', 'blog-catalog', 'dblp', 'yago'])
     parser.add_argument('--embedding', type=str, required=True)
     parser.add_argument('--vector_f', type=str, default='hadamard', choices=['hadamard', 'average', 'minus', 'abs_minus'])
     parser.add_argument('--result', type=str, default='')

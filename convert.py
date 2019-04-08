@@ -7,6 +7,7 @@ from utils import load_data
 import numpy as np
 import pandas as pd
 
+
 def get_type(idx, type_interval):
     for k, v in type_interval.items():
         if v[0]<=idx and idx<=v[1]:
@@ -157,7 +158,7 @@ if __name__=='__main__':
     parser.add_argument('--root', type=str, default='data')
     parser.add_argument('--model', type=str, default='deepwalk', choices=['deepwalk', 'LINE', 'metapath2vec', 'hin2vec'])
     parser.add_argument('--metapath', type=str)
-    parser.add_argument('--dataset', type=str, default='dblp', choices=['douban_movie', 'aminer', 'blog-catalog', 'dblp', 'yelp'])
+    parser.add_argument('--dataset', type=str, default='dblp', choices=['douban_movie', 'blog-catalog', 'dblp', 'yago'])
     parser.add_argument('--reverse', action='store_true')
     args = parser.parse_args()
 

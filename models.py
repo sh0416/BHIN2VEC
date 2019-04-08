@@ -122,4 +122,3 @@ class BalancedSkipGramModel(nn.Module):
         neg_pair_type = neg_pair_type.view(-1)
 
         return pos, neg, pos_pair_type, neg_pair_type
-

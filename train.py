@@ -22,59 +22,12 @@ from tensorboardX import SummaryWriter
 from graphviz import Digraph
 
 from models import BalancedSkipGramModel
-from utils import load_data, create_graph
-
-
-def make_dot(var, params):
-    """ Produces Graphviz representation of PyTorch autograd graph
-
-    Blue nodes are the Variables that require grad, orange are Tensors
-    saved for backward in torch.autograd.Function
-
-    Args:
-        var: output Variable
-        params: dict of (name, Variable) to add names to node that
-            require grad (TODO: make optional)
-    """
-    param_map = {id(v): k for k, v in params.items()}
-    node_attr = dict(style='filled',
-                     shape='box',
-                     align='left',
-                     fontsize='12',
-                     ranksep='0.1',
-                     height='0.2')
-    dot = Digraph(node_attr=node_attr, graph_attr=dict(size="12,12"))
-    seen = set()
-    def size_to_str(size):
-        return '('+(', ').join(['%d'% v for v in size])+')'
-
-    def add_nodes(var):
-        if var not in seen:
-            if torch.is_tensor(var):
-                dot.node(str(id(var)), size_to_str(var.size()), fillcolor='orange')
-            elif hasattr(var, 'variable'):
-                u = var.variable
-                node_name = '%s\n %s' % (param_map.get(id(u)), size_to_str(u.size()))
-                dot.node(str(id(var)), node_name, fillcolor='lightblue')
-            else:
-                dot.node(str(id(var)), str(type(var).__name__))
-            seen.add(var)
-            if hasattr(var, 'next_functions'):
-                for u in var.next_functions:
-                    if u[0] is not None:
-                        dot.edge(str(id(u[0])), str(id(var)))
-                        add_nodes(u[0])
-            if hasattr(var, 'saved_tensors'):
-                for t in var.saved_tensors:
-                    dot.edge(str(id(t)), str(id(var)))
-                    add_nodes(t)
-    add_nodes(var.grad_fn)
-    return dot
+from utils import load_data, create_graph, make_dot
 
 
 def add_argument(parser):
     parser.add_argument('--root', type=str, default='data')
-    parser.add_argument('--dataset', type=str, default='dblp', choices=['blog-catalog', 'aminer', 'douban_movie', 'dblp', 'yelp'])
+    parser.add_argument('--dataset', type=str, default='dblp', choices=['blog-catalog', 'douban_movie', 'dblp', 'yago'])
     parser.add_argument('--epoch', type=int, default=10)
     parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--d', type=int, default=128)
@@ -90,30 +43,6 @@ def add_argument(parser):
 
 def get_output_name(args):
     return 'experimental_%s_%d_%d_%d_%d_%.2f_%.6f_%6f' % (args.dataset, args.d, args.l, args.k, args.m, args.alpha, args.lr, args.lr2)
-
-
-def deepwalk(v, l, adj_data, adj_size, adj_start):
-    """Random walk
-
-    Args:
-        v (torch.LongTensor): [Batch_size] start index.
-        l (int): length of random walk.
-        adj_data (torch.LongTensor): [E] data bank for adjacency list.
-        adj_size (torch.FloatTensor): [V] degree for each node.
-        adj_start (torch.LongTensor): [V] start index for each node in `adj_data`.
-    Returns:
-        torch.LongTensor [B, L]
-    """
-    walk = [None] * l
-    node = v
-    walk[0] = node
-
-    for i in range(1, l):
-        offset = torch.floor(torch.rand_like(node, dtype=torch.float) * adj_size[node]).long()
-        idx = adj_start[node] + offset
-        node = adj_data[idx]
-        walk[i] = node
-    return torch.stack(walk).t()
 
 
 def biased_walk(node, node_t, l, stochastic_matrix, adj_data, adj_size, adj_start):
@@ -208,6 +137,8 @@ def main(args):
     stochastic_matrix = meta_adjacency_matrix
     stochastic_matrix = stochastic_matrix / stochastic_matrix.sum(dim=1, keepdim=True)
     stochastic_matrix = stochastic_matrix.clone().detach().requires_grad_(True)
+
+    stochastic_matrix_normal = stochastic_matrix.clone().detach().requires_grad_(False)
 
     # Loss
     previous_case_loss = torch.full((args.k, len(type_order), len(type_order)), fill_value=0.6931)
@@ -308,11 +239,21 @@ def main(args):
                 stochastic_matrix_pred.append(tmp)
                 tmp = torch.mm(tmp, stochastic_matrix)
             stochastic_matrix_pred = torch.stack(stochastic_matrix_pred)
-            print(stochastic_matrix_true)
-            print(stochastic_matrix_pred)
 
             # Calculate loss_stochastic
             loss_stochastic = torch.pow(stochastic_matrix_true[possible_tensor] - stochastic_matrix_pred[possible_tensor], 2).mean()
+
+            # 그냥 트레이닝 안 시켯을 때, 움직이는 양
+            with torch.no_grad():
+                # Predict tensor using stochastic matrix
+                stochastic_matrix_pred = []
+                tmp = stochastic_matrix_normal
+                for i in range(args.k):
+                    stochastic_matrix_pred.append(tmp)
+                    tmp = torch.mm(tmp, stochastic_matrix_normal)
+                stochastic_matrix_pred = torch.stack(stochastic_matrix_pred)
+                loss_stochastic_normal = torch.pow(stochastic_matrix_true[possible_tensor] - stochastic_matrix_pred[possible_tensor], 2).mean()
+
 
             # Rander graph
             #g = make_dot(loss_stochastic, {})
@@ -320,6 +261,7 @@ def main(args):
 
             # Backpropagation
             loss_stochastic.backward()
+            print('움직였을 때: %.4f, 가만히 있을 때: %.4f' % (loss_stochastic, loss_stochastic_normal))
 
             # Update stochastic matrix
             with torch.no_grad():
@@ -329,6 +271,7 @@ def main(args):
                 # Condition: 1. update only explicit edge, 2. row-normalize
                 stochastic_matrix = stochastic_matrix * meta_adjacency_matrix
                 stochastic_matrix = stochastic_matrix / stochastic_matrix.sum(dim=1, keepdim=True)
+                print(stochastic_matrix)
             stochastic_matrix.requires_grad_(True)
 
             # Summary
@@ -375,4 +318,3 @@ if __name__=='__main__':
     add_argument(parser)
     args = parser.parse_args()
     main(args)
-
