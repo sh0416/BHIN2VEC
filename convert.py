@@ -17,11 +17,13 @@ def get_type(idx, type_interval):
 
 def convert_deepwalk(args):
     if args.reverse:
+        node_type, edge_df, _, _ = load_data(args)
+        node_num = max([x[1] for x in node_type.values()]) + 1
         with open(os.path.join('other-method', 'deepwalk', '%s.embeddings' % (args.dataset))) as f:
             for idx, line in enumerate(f):
                 if idx == 0:
                     data = list(map(int, line.split(' ')))
-                    embedding = np.random.normal(scale=0.01, size=(data[0], data[1]))
+                    embedding = np.random.normal(scale=0.01, size=(node_num, data[1]))
                 else:
                     data = list(map(float, line.split(' ')))
                     embedding[int(data[0]), :] = data[1:]
@@ -37,11 +39,13 @@ def convert_deepwalk(args):
 
 def convert_LINE(args):
     if args.reverse:
+        node_type, edge_df, _, _ = load_data(args)
+        node_num = max([x[1] for x in node_type.values()]) + 1
         with open(os.path.join('other-method', 'LINE', '%s.embeddings' % (args.dataset))) as f:
             for idx, line in enumerate(f):
                 if idx == 0:
                     data = list(map(int, line.split(' ')))
-                    embedding = np.random.normal(scale=0.1, size=(data[0], data[1]))
+                    embedding = np.random.normal(scale=0.1, size=(node_num, data[1]))
                 else:
                     line = line.rstrip()
                     data = list(map(float, line.split(' ')))
@@ -77,7 +81,7 @@ def convert_metapath2vec(args):
                     if index == '</s>':
                         continue
                     embedding[int(index[1:]), :] = data
-        np.save(os.path.join('output', 'metapaht2vec_%s.npy' % (args.dataset)), embedding)
+        np.save(os.path.join('output', 'metapath2vec_%s.npy' % (args.dataset)), embedding)
     else:
         metapath = args.metapath
         node_type, edge_df, _, _ = load_data(args)
@@ -95,6 +99,8 @@ def convert_metapath2vec(args):
         elif args.dataset == 'yelp':
             type_mapping = {'U': 'v', 'B': 'a', 'C': 'i', 'W': 'f'}
         elif args.dataset == 'dblp':
+            type_mapping = {'A': 'v', 'P': 'a', 'T': 'i', 'V': 'f'}
+        elif args.dataset == 'dblp-expert-knowledge':
             type_mapping = {'A': 'v', 'P': 'a', 'T': 'i', 'V': 'f'}
         elif args.dataset == 'aminer':
             type_mapping = {'A': 'v', 'P': 'a', 'R': 'i', 'C': 'f'}
@@ -130,11 +136,13 @@ def convert_metapath2vec(args):
 
 def convert_hin2vec(args):
     if args.reverse:
+        node_type, edge_df, _, _ = load_data(args)
+        node_num = max([x[1] for x in node_type.values()]) + 1
         with open(os.path.join('other-method', 'hin2vec', '%s.embeddings' % (args.dataset))) as f:
             for idx, line in enumerate(f):
                 if idx == 0:
                     data = list(map(int, line.split(' ')))
-                    embedding = np.zeros((data[0], data[1]))
+                    embedding = np.zeros((node_num, data[1]))
                 else:
                     data = list(map(float, line.split(' ')))
                     embedding[int(data[0]), :] = data[1:]
@@ -158,7 +166,7 @@ if __name__=='__main__':
     parser.add_argument('--root', type=str, default='data')
     parser.add_argument('--model', type=str, default='deepwalk', choices=['deepwalk', 'LINE', 'metapath2vec', 'hin2vec'])
     parser.add_argument('--metapath', type=str)
-    parser.add_argument('--dataset', type=str, default='dblp', choices=['douban_movie', 'blog-catalog', 'dblp', 'yago'])
+    parser.add_argument('--dataset', type=str, default='dblp', choices=['douban_movie', 'blog-catalog', 'dblp', 'dblp-expert-knowledge', 'yago'])
     parser.add_argument('--reverse', action='store_true')
     args = parser.parse_args()
 

@@ -1,5 +1,6 @@
 import os
 import random
+import logging
 import argparse
 from collections import defaultdict
 from utils import load_data, create_graph
@@ -11,6 +12,12 @@ from sklearn.model_selection import KFold
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import average_precision_score, recall_score, f1_score
 import tqdm
+
+
+def get_name(args):
+    embedding_name = os.path.basename(args.embedding)
+    embedding_name = '.'.join(embedding_name.split('.')[:-1])
+    return 'link_prediction_%s' % embedding_name
 
 
 def create_negative_train_data(train_edge, src_type, tgt_type, node_type, src_vertex, tgt_vertex):
@@ -104,15 +111,24 @@ def evaluate(node_embedding, train_edge, test_edge, src_type, tgt_type, node_typ
             t.set_postfix(hit_rate=hit/count)
     return hit/count
 
-
 def main(args):
+    # 실험 이름 생성
+    name = get_name(args)
+
+    # 로거 생성
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+            
+    os.makedirs('link_prediction_result', exist_ok=True)
+    file_handler = logging.FileHandler(os.path.join('link_prediction_result', name+'.log'))
+    logger.addHandler(file_handler)
+	
     # Load data
     node_type, edge_df, test_node_df, test_edge_df = load_data(args)
     embedding = np.load(args.embedding)
 
     node_num = max([x[1] for x in node_type.values()]) + 1
     type_order = list(node_type.keys())
-    #type_order = ['G', 'U']
 
     adj_data, adj_size, adj_start = create_graph(edge_df, node_num, type_order)
 
@@ -123,8 +139,8 @@ def main(args):
             if len(train_edge) == 0 or len(test_edge) == 0:
                 continue
 
-            # 두 타입이 같으면 반대 방향 에지도 포함
             if type1 == type2:
+                # 두 타입이 같으면 반대 방향 에지도 포함
                 train_edge2 = train_edge.copy()
                 train_edge2.columns = [x[0]+'2' if x[1]=='1' else x[0]+'1' for x in train_edge2.columns]
                 train_edge = pd.concat((train_edge, train_edge2), axis=0, sort=False)
@@ -135,14 +151,17 @@ def main(args):
                 test_edge = pd.concat((test_edge, test_edge2), axis=0, sort=False)
                 test_edge = test_edge.drop_duplicates()
 
-            result = evaluate(embedding, train_edge, test_edge, type1, type2, node_type, args.vector_f)
-            print('Evaluate link prediction (Source type %s - Target type %s) Result: %.4f' % (type1, type2, result))
+                result = evaluate(embedding, train_edge, test_edge, type1, type2, node_type, args.vector_f)
+                logger.info('Evaluate link prediction (Source type %s - Target type %s) Result: %.4f' % (type1, type2, result))
 
-            result = evaluate(embedding, train_edge, test_edge, type2, type1, node_type, args.vector_f)
-            print('Evaluate link prediction (Source type %s - Target type %s) Result: %.4f' % (type2, type1, result))
-            
-            
+            else:
+                # 두 타입이 다르면 두 번 실행
+                result = evaluate(embedding, train_edge, test_edge, type1, type2, node_type, args.vector_f)
+                logger.info('Evaluate link prediction (Source type %s - Target type %s) Result: %.4f' % (type1, type2, result))
 
+                result = evaluate(embedding, train_edge, test_edge, type2, type1, node_type, args.vector_f)
+                logger.info('Evaluate link prediction (Source type %s - Target type %s) Result: %.4f' % (type2, type1, result))
+            
 
 if __name__=='__main__':
     parser = argparse.ArgumentParser()

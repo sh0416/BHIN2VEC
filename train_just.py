@@ -23,7 +23,7 @@ from utils import load_data, create_graph
 
 def add_argument(parser):
     parser.add_argument('--root', type=str, default='data')
-    parser.add_argument('--dataset', type=str, default='dblp', choices=['blog-catalog', 'douban_movie', 'aminer', 'dblp', 'yelp'])
+    parser.add_argument('--dataset', type=str, default='dblp', choices=['blog-catalog', 'douban_movie', 'yago', 'dblp', 'yelp'])
     parser.add_argument('--alpha', type=float, default=0.5)
     parser.add_argument('--que_size', type=int, default=2)
     parser.add_argument('--epoch', type=int, default=10)
