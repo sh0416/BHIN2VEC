@@ -108,6 +108,11 @@ def serialize_adj_indice(data):
     return adj_data, adj_size, adj_start, type_order
 
 def main(args):
+    torch.manual_seed(0)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    np.random.seed(0)
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)
 
@@ -181,28 +186,12 @@ def main(args):
                 t.set_postfix(loss=loss.item())
 
         # Save embedding
-        total_embedding = model.node_embedding.weight.data
-        for i, t in enumerate(type_order):
-            if t in test_node_df:
-                tmp = test_node_df[t].drop(t, axis=1)
-                if len(tmp.columns) == 1:
-                    writer.add_embedding(total_embedding[test_node_df[t][t].values],
-                                         metadata=tmp.values[:, 0],
-                                         global_step=epoch, tag=t)
-                else:
-                    writer.add_embedding(total_embedding[test_node_df[t][t].values],
-                                         metadata_header=list(tmp.columns),
-                                         metadata=tmp.values,
-                                         global_step=epoch, tag=t)
-
         np.save(os.path.join('output', get_output_name(args)+'.npy'),
                 model.node_embedding.weight.detach().cpu().numpy())
     writer.close()
 
 if __name__=='__main__':
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     parser = argparse.ArgumentParser()
     add_argument(parser)
     args = parser.parse_args()
     main(args)
-

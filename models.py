@@ -51,9 +51,9 @@ class BalancedSkipGramModel(nn.Module):
         super().__init__()
         # Parameter
         self.node_embedding = nn.Parameter(torch.empty(node_num, dim))
-        self.relationship_embedding = nn.Parameter(torch.empty(type_num*type_num, dim))
+        self.relationship_embedding = nn.Parameter(torch.empty(k*type_num*type_num, dim))
         nn.init.normal_(self.node_embedding.data, std=0.1)
-        nn.init.normal_(self.relationship_embedding.data, std=1)
+        nn.init.normal_(self.relationship_embedding.data, std=0.1)
 
         # Data information
         self.node_num = node_num
@@ -80,13 +80,13 @@ class BalancedSkipGramModel(nn.Module):
         neg_pair_type = self.type_num*walk_type.unsqueeze(2).unsqueeze(3)+neg_type
         # [B, L-K, K], [B, L-K, K, M]
 
-        pos_pair = self.relationship_embedding[pos_pair_type]
-        neg_pair = self.relationship_embedding[neg_pair_type]
-        # [B, L-K, K, D], [B, L-K, K, M, D]
-
         pos_pair_type = self.type_num*self.type_num*torch.arange(self.k).cuda().unsqueeze(0).unsqueeze(1) + pos_pair_type
         neg_pair_type = self.type_num*self.type_num*torch.arange(self.k).cuda().unsqueeze(0).unsqueeze(1).unsqueeze(3) + neg_pair_type
         # [B, L-K, K], [B, L-K, K, M]
+
+        pos_pair = self.relationship_embedding[pos_pair_type]
+        neg_pair = self.relationship_embedding[neg_pair_type]
+        # [B, L-K, K, D], [B, L-K, K, M, D]
 
         neg = neg.view(-1, self.l-self.k, self.k*self.m)
         neg_type = neg_type.view(-1, self.l-self.k, self.k*self.m)

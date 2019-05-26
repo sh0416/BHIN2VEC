@@ -41,12 +41,11 @@ def main(args):
     for t, (min_value, max_value) in node_type.items():
         # 타겟 타입에 해당하는 노드만 걸러낸 뒤,
         target_node = node_df[(min_value <= node_df['v']) & (node_df['v'] <= max_value)]
-        if len(target_node) == 0:
+        if len(target_node) <= 500:
             continue
 
         X = embedding[target_node['v']]
         y = target_node['l'].values
-
         # 테스트 셋과 트레이닝 셋 스플릿
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, stratify=y)
 

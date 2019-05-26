@@ -2,7 +2,7 @@ import os
 import random
 import argparse
 from collections import defaultdict
-from utils import load_data
+from utils import load_data, add_argument, get_name
 
 import numpy as np
 import pandas as pd
@@ -19,7 +19,7 @@ def convert_deepwalk(args):
     if args.reverse:
         node_type, edge_df, _, _ = load_data(args)
         node_num = max([x[1] for x in node_type.values()]) + 1
-        with open(os.path.join('other-method', 'deepwalk', '%s.embeddings' % (args.dataset))) as f:
+        with open(os.path.join('other-method', 'deepwalk', '%s_%d_%.4f.embeddings' % (args.dataset, args.d, args.lr))) as f:
             for idx, line in enumerate(f):
                 if idx == 0:
                     data = list(map(int, line.split(' ')))
@@ -27,7 +27,7 @@ def convert_deepwalk(args):
                 else:
                     data = list(map(float, line.split(' ')))
                     embedding[int(data[0]), :] = data[1:]
-        np.save(os.path.join('output', 'deepwalk_%s.npy' % (args.dataset)), embedding)
+        np.save(os.path.join('output', get_name(args)+'.npy'), embedding)
     else:
         _, edge_df, _, _ = load_data(args)
         os.makedirs(os.path.join('other-method', 'deepwalk'), exist_ok=True)
@@ -41,7 +41,7 @@ def convert_LINE(args):
     if args.reverse:
         node_type, edge_df, _, _ = load_data(args)
         node_num = max([x[1] for x in node_type.values()]) + 1
-        with open(os.path.join('other-method', 'LINE', '%s.embeddings' % (args.dataset))) as f:
+        with open(os.path.join('other-method', 'LINE', '%s_%d_%.4f.embeddings' % (args.dataset, args.d, args.lr))) as f:
             for idx, line in enumerate(f):
                 if idx == 0:
                     data = list(map(int, line.split(' ')))
@@ -51,7 +51,7 @@ def convert_LINE(args):
                     data = list(map(float, line.split(' ')))
                     assert len(data) == embedding.shape[1]+1
                     embedding[int(data[0]), :] = data[1:]
-        np.save(os.path.join('output', 'LINE_%s.npy' % (args.dataset)), embedding)
+        np.save(os.path.join('output', get_name(args)+'.npy'), embedding)
     else:
         _, edge_df, _, _ = load_data(args)
         os.makedirs(os.path.join('other-method', 'LINE'), exist_ok=True)
@@ -81,7 +81,7 @@ def convert_metapath2vec(args):
                     if index == '</s>':
                         continue
                     embedding[int(index[1:]), :] = data
-        np.save(os.path.join('output', 'metapath2vec_%s.npy' % (args.dataset)), embedding)
+        np.save(os.path.join('output', get_name(args)+'.npy'), embedding)
     else:
         metapath = args.metapath
         node_type, edge_df, _, _ = load_data(args)
@@ -100,8 +100,6 @@ def convert_metapath2vec(args):
             type_mapping = {'U': 'v', 'B': 'a', 'C': 'i', 'W': 'f'}
         elif args.dataset == 'dblp':
             type_mapping = {'A': 'v', 'P': 'a', 'T': 'i', 'V': 'f'}
-        elif args.dataset == 'dblp-expert-knowledge':
-            type_mapping = {'A': 'v', 'P': 'a', 'T': 'i', 'V': 'f'}
         elif args.dataset == 'aminer':
             type_mapping = {'A': 'v', 'P': 'a', 'R': 'i', 'C': 'f'}
         elif args.dataset == 'blog-catalog':
@@ -110,8 +108,8 @@ def convert_metapath2vec(args):
             raise Exception()
 
         walk = [None] * 100
-        with open(os.path.join('other-method', 'metapath2vec', '%s.randomwalk' % (args.dataset)), 'w') as f:
-            for i in range(10):
+        with open(os.path.join('other-method', 'metapath2vec', '%s0.randomwalk' % (args.dataset)), 'w') as f:
+            for i in range(1):
                 print('Walking... %d' % i)
                 for idx, j in enumerate(graph.keys()):
                     for k, v in node_type.items():
@@ -138,7 +136,7 @@ def convert_hin2vec(args):
     if args.reverse:
         node_type, edge_df, _, _ = load_data(args)
         node_num = max([x[1] for x in node_type.values()]) + 1
-        with open(os.path.join('other-method', 'hin2vec', '%s.embeddings' % (args.dataset))) as f:
+        with open(os.path.join('other-method', 'hin2vec', '%s_%d_%.4f.embeddings' % (args.dataset, args.d, args.lr))) as f:
             for idx, line in enumerate(f):
                 if idx == 0:
                     data = list(map(int, line.split(' ')))
@@ -146,7 +144,7 @@ def convert_hin2vec(args):
                 else:
                     data = list(map(float, line.split(' ')))
                     embedding[int(data[0]), :] = data[1:]
-        np.save(os.path.join('output', 'hin2vec_%s.npy'%(args.dataset)), embedding)
+        np.save(os.path.join('output', get_name(args)+'.npy'), embedding)
     else:
         _, edge_df, _, _ = load_data(args)
         os.makedirs(os.path.join('other-method', 'hin2vec'), exist_ok=True)
@@ -161,12 +159,48 @@ def convert_hin2vec(args):
                        header=False)
 
 
+def convert_heer(args):
+    if args.reverse:
+        node_type, edge_df, _, _ = load_data(args)
+        node_num = max([x[1] for x in node_type.values()]) + 1
+        with open(os.path.join('other-method', 'hin2vec', '%s.embeddings' % (args.dataset))) as f:
+            for idx, line in enumerate(f):
+                if idx == 0:
+                    data = list(map(int, line.split(' ')))
+                    embedding = np.zeros((node_num, data[1]))
+                else:
+                    data = list(map(float, line.split(' ')))
+                    embedding[int(data[0]), :] = data[1:]
+        np.save(os.path.join('output', get_name(args)+'.npy'), embedding)
+    else:
+        _, edge_df, _, _ = load_data(args)
+        os.makedirs(os.path.join('other-method', 'heer'), exist_ok=True)
+        # undirected graph에서만 통하는 것 같다. 두 방향으로 할 필요는 없음
+        edge_df['v1'] = edge_df['t1'].astype(str) + ':' + edge_df['v1'].astype(str)
+        edge_df['v2'] = edge_df['t2'].astype(str) + ':' + edge_df['v2'].astype(str)
+        edge_df['edge_weight'] = 1
+        edge_df['edge_type'] = '<' + edge_df['t1'] + '-' + edge_df['t2'] + '>:u'
+        edge_df = edge_df.drop(['t1', 't2'], axis=1)
+        edge_df.to_csv(os.path.join('other-method', 'heer', '%s.edgelist' % (args.dataset)),
+                       sep='\t',
+                       index=False,
+                       header=False)
+        # LINE 위한 에지 데이터프레임
+        tmp = edge_df[['v1', 'v2']].copy()
+        tmp2 = edge_df[['v2', 'v1']].copy()
+        tmp2.columns = ['v1', 'v2']
+        edge_df = pd.concat((tmp, tmp2), axis=0, sort=False)
+        edge_df['weight'] = 1
+        edge_df[['v1', 'v2', 'weight']].to_csv(os.path.join('other-method', 'HEER', 'LINE_%s.edgelist' % (args.dataset)),
+                                     sep='\t',
+                                     index=False,
+                                     header=False)
+
+        
 if __name__=='__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--root', type=str, default='data')
-    parser.add_argument('--model', type=str, default='deepwalk', choices=['deepwalk', 'LINE', 'metapath2vec', 'hin2vec'])
+    add_argument(parser)
     parser.add_argument('--metapath', type=str)
-    parser.add_argument('--dataset', type=str, default='dblp', choices=['douban_movie', 'blog-catalog', 'dblp', 'dblp-expert-knowledge', 'yago'])
     parser.add_argument('--reverse', action='store_true')
     args = parser.parse_args()
 
@@ -178,3 +212,5 @@ if __name__=='__main__':
         convert_metapath2vec(args)
     elif args.model == 'hin2vec':
         convert_hin2vec(args)
+    elif args.model == 'heer':
+        convert_heer(args)

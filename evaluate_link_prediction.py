@@ -3,7 +3,7 @@ import random
 import logging
 import argparse
 from collections import defaultdict
-from utils import load_data, create_graph
+from utils import add_argument, load_data, create_graph, get_name
 
 import numpy as np
 import pandas as pd
@@ -12,12 +12,6 @@ from sklearn.model_selection import KFold
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import average_precision_score, recall_score, f1_score
 import tqdm
-
-
-def get_name(args):
-    embedding_name = os.path.basename(args.embedding)
-    embedding_name = '.'.join(embedding_name.split('.')[:-1])
-    return 'link_prediction_%s' % embedding_name
 
 
 def create_negative_train_data(train_edge, src_type, tgt_type, node_type, src_vertex, tgt_vertex):
@@ -75,7 +69,7 @@ def evaluate(node_embedding, train_edge, test_edge, src_type, tgt_type, node_typ
     y = train_edge.loc[:, 'l'].values
 
     # Train classifier
-    classifier = LogisticRegression(solver='liblinear', class_weight='balanced').fit(X, y)
+    classifier = LogisticRegression(solver='liblinear', class_weight='balanced', random_state=42).fit(X, y)
 
     # Evaluation protocol
     src_type_min_idx, src_type_max_idx = node_type[src_type]
@@ -118,14 +112,14 @@ def main(args):
     # 로거 생성
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)
-            
+
     os.makedirs('link_prediction_result', exist_ok=True)
     file_handler = logging.FileHandler(os.path.join('link_prediction_result', name+'.log'))
     logger.addHandler(file_handler)
-	
+
     # Load data
     node_type, edge_df, test_node_df, test_edge_df = load_data(args)
-    embedding = np.load(args.embedding)
+    embedding = np.load(os.path.join('output', name+'.npy'))
 
     node_num = max([x[1] for x in node_type.values()]) + 1
     type_order = list(node_type.keys())
@@ -161,15 +155,11 @@ def main(args):
 
                 result = evaluate(embedding, train_edge, test_edge, type2, type1, node_type, args.vector_f)
                 logger.info('Evaluate link prediction (Source type %s - Target type %s) Result: %.4f' % (type2, type1, result))
-            
+
 
 if __name__=='__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--root', type=str, default='data')
-    parser.add_argument('--dataset', type=str, default='dblp', choices=['douban_movie', 'blog-catalog', 'dblp', 'yago'])
-    parser.add_argument('--embedding', type=str, required=True)
+    add_argument(parser)
     parser.add_argument('--vector_f', type=str, default='hadamard', choices=['hadamard', 'average', 'minus', 'abs_minus'])
-    parser.add_argument('--result', type=str, default='')
     args = parser.parse_args()
-
     main(args)

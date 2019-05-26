@@ -17,17 +17,18 @@ import torch
 def add_argument(parser):
     parser.add_argument('--root', type=str, default='data')
     parser.add_argument('--model', type=str, default='experimental',
-                        choices=['experimental', 'hin2vec', 'metapath2vec'])
+                        choices=['just', 'experimental', 'hin2vec', 'heer', 'metapath2vec', 'deepwalk', 'LINE'])
     parser.add_argument('--dataset', type=str, default='dblp',
-                        choices=['blog-catalog', 'douban_movie', 'dblp', 'dblp-expert-knowledge', 'yago'])
+                        choices=['blog-catalog', 'douban_movie', 'dblp', 'yago']+['synthetic_%d_%d' % (n, t) for n in [100, 1000, 10000] for t in [2, 4, 8]])
     parser.add_argument('--epoch', type=int, default=10)
-    parser.add_argument('--batch_size', type=int, default=32)
+    parser.add_argument('--batch_size', type=int, default=128)
     parser.add_argument('--d', type=int, default=128)
     parser.add_argument('--l', type=int, default=100)
     parser.add_argument('--k', type=int, default=5)
     parser.add_argument('--m', type=int, default=5)
     parser.add_argument('--alpha', type=float, default=0.05)
-    parser.add_argument('--lr', type=float, default=0.0025)
+    parser.add_argument('--que_size', type=int, default=2)
+    parser.add_argument('--lr', type=float, default=0.025)
     parser.add_argument('--lr2', type=float, default=0.0025)
     parser.add_argument('--restore', action='store_true')
     parser.add_argument('--approximate_naive', action='store_true')
@@ -36,8 +37,12 @@ def add_argument(parser):
 def get_name(args):
     if args.model == 'experimental':
         return 'experimental_%s_%d_%d_%d_%d_%.2f_%.6f_%6f' % (args.dataset, args.d, args.l, args.k, args.m, args.alpha, args.lr, args.lr2)
+    elif args.model == 'just':
+        name = 'just_%s_%d_%d_%d_%d' % (args.dataset, args.d, args.l, args.k, args.m)
+        name += '_%.2f_%d' % (args.alpha, args.que_size)
+        return name
     else:
-        return '%s_%s' % (args.model, args.dataset)
+        return '%s_%s_%d_%.4f' % (args.model, args.dataset, args.d, args.lr)
 
 
 def deprecated(replacement=None):
@@ -155,22 +160,16 @@ def load_data(args):
         node_type = load_metadata(data_dir)
         node_df = pd.read_csv(os.path.join(data_dir, 'node.csv'), sep='\t')
         edge_df = pd.read_csv(os.path.join(data_dir, 'edge.csv'), sep='\t')
-    elif args.dataset == 'dblp-expert-knowledge':
-        data_dir = os.path.join(args.root, 'dblp')
-        node_type = load_metadata(data_dir)
-        node_df = pd.read_csv(os.path.join(data_dir, 'node.csv'), sep='\t')
-        edge_df = pd.read_csv(os.path.join(data_dir, 'edge.csv'), sep='\t')
-        # A-P인 것과 V-P인 것만 남기고 나머지 데이터 모두 제거
-        edge_df_AP = edge_df[(edge_df['t1']=='A') & (edge_df['t2']=='P')]
-        edge_df_PA = edge_df[(edge_df['t1']=='P') & (edge_df['t2']=='A')]
-        edge_df_VP = edge_df[(edge_df['t1']=='V') & (edge_df['t2']=='P')]
-        edge_df_PV = edge_df[(edge_df['t1']=='P') & (edge_df['t2']=='V')]
-        edge_df = pd.concat([edge_df_AP, edge_df_PA, edge_df_VP, edge_df_PV], sort=False)
     elif args.dataset == 'yago':
         with open(os.path.join(data_dir, 'node_type.pickle'), 'rb') as f:
             node_type = pickle.load(f)
         edge_df = pd.read_csv(os.path.join(data_dir, 'train_edge.csv'), sep='\t')
         test_edge_df = pd.read_csv(os.path.join(data_dir, 'test_edge.csv'), sep='\t')
+    elif args.dataset.startswith('synthetic'):
+        node_num, type_num = args.dataset.split('_')[1:]
+        with open(os.path.join(args.root, 'synthetic', 'node_type_'+node_num+'_'+type_num+'.pickle'), 'rb') as f:
+            node_type = pickle.load(f)
+        edge_df = pd.read_csv(os.path.join(args.root, 'synthetic', 'edge_'+node_num+'_'+type_num+'.csv'), sep='\t')
     else:
         raise Exception("Undefined dataset")
     return node_type, edge_df, node_df, test_edge_df

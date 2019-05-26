@@ -1,4 +1,5 @@
 import os
+import shutil
 import pickle
 import logging
 import argparse
@@ -6,11 +7,15 @@ import functools
 from decimal import Decimal
 from collections import defaultdict
 
+import tqdm
 import numpy as np
 import scipy.sparse as sp
 import pandas as pd
 import matplotlib.pyplot as plt
-import tqdm
+
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import average_precision_score, recall_score, f1_score
 
 import torch
 import torch.nn as nn
@@ -55,20 +60,14 @@ def biased_walk(node, node_t, l, stochastic_matrix, adj_data, adj_size, adj_star
     return torch.stack(walk).t(), torch.stack(walk_t).t()
 
 
-def main(args):
-    # 로거 생성
-    os.makedirs('log', exist_ok=True)
-    logger = logging.getLogger()
-    logger.setLevel(logging.INFO)
-    logger.addHandler(logging.StreamHandler())
-    logger.addHandler(logging.FileHandler(os.path.join('log', get_name(args)+'.log')))
-
+def train(args, node_type, edge_df, logger):
     # pyTorch 세팅
-    torch.set_printoptions(precision=5)
+    np.random.seed(0)
+    torch.manual_seed(0)
+    torch.set_printoptions(precision=7)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-
-    # 데이터 로드
-    node_type, edge_df, node_df, _ = load_data(args)
 
     # Node metadata
     node_num = max([x[1] for x in node_type.values()]) + 1
@@ -102,7 +101,10 @@ def main(args):
 
     # Report result (embedding result, TensorboardX)
     os.makedirs('output', exist_ok=True)
-    writer = SummaryWriter(os.path.join('log', get_name(args)))
+    logdir_fpath = os.path.join('log', get_name(args))
+    if os.path.exists(logdir_fpath):
+        shutil.rmtree(logdir_fpath)
+    writer = SummaryWriter(logdir_fpath)
 
     # Theoretical initial loss
     L0 = 0.6931
@@ -152,8 +154,6 @@ def main(args):
                 node_t = type_indicator[node]
 
                 walk, walk_type = biased_walk(node, node_t, args.l, stochastic_matrix.cpu(), adj_data, adj_size, adj_start)
-
-                # Move to GPU
                 walk, walk_type = walk.to(device), walk_type.to(device)
 
                 # Make positive node
@@ -166,7 +166,7 @@ def main(args):
                 neg = torch.floor(neg * type_size[pos_type].unsqueeze(3)) + type_min[pos_type].unsqueeze(3)
                 neg = neg.long()
                 neg_type = type_indicator_gpu[neg]
-                assert torch.all(torch.eq(pos_type.unsqueeze(3), neg_type))
+                #assert torch.all(torch.eq(pos_type.unsqueeze(3), neg_type))
                 # [B, L-K, K, M]
 
                 # Trim last walk
@@ -185,9 +185,6 @@ def main(args):
             type_ = torch.cat((pos_type, neg_type))
 
             loss = criterion(pred, true)
-            #g = make_dot(loss, model.state_dict())
-            #g.render()
-
             loss.mean().backward()
             optimizer.step()
 
@@ -210,17 +207,20 @@ def main(args):
             previous_case_loss = training_case_loss.clone().detach()
 
             loss_ratio = training_case_loss / L0
-            inverse_ratio = loss_ratio / loss_ratio[possible_tensor].mean()
+            loss_ratio[~possible_tensor] = 0
+            inverse_ratio = loss_ratio / (loss_ratio.sum(dim=2, keepdim=True)/(possible_tensor.sum(dim=2, keepdim=True).float()+1e-15))
             # Small -> Well train
-
+            #print('POSSIBLE', possible_tensor[0])
             # Create target
             if args.approximate_naive:
                 stochastic_matrix_true = torch.pow(inverse_ratio, args.alpha)
+                stochastic_matrix_true[~possible_tensor] = 0
             else:
                 stochastic_matrix_true = type_normal_tensor + args.alpha * (inverse_ratio-1)
+                stochastic_matrix_true.clamp_(0, 1)
                 stochastic_matrix_true[~possible_tensor] = 0
             # Row normalize
-            stochastic_matrix_true = stochastic_matrix_true / stochastic_matrix_true.sum(dim=2, keepdim=True)
+            stochastic_matrix_true = stochastic_matrix_true / (stochastic_matrix_true.sum(dim=2, keepdim=True) + 1e-15)
             stochastic_matrix_true = stochastic_matrix_true.clone().detach()
 
             # Predict tensor using stochastic matrix
@@ -233,45 +233,51 @@ def main(args):
 
             # Calculate loss_stochastic
             loss_stochastic = torch.pow(stochastic_matrix_true[possible_tensor] - stochastic_matrix_pred[possible_tensor], 2).mean()
-
-            # 그냥 트레이닝 안 시켯을 때, 움직이는 양
-            with torch.no_grad():
-                # Predict tensor using stochastic matrix
-                stochastic_matrix_pred = []
-                tmp = stochastic_matrix_normal
-                for i in range(args.k):
-                    stochastic_matrix_pred.append(tmp)
-                    tmp = torch.mm(tmp, stochastic_matrix_normal)
-                stochastic_matrix_pred = torch.stack(stochastic_matrix_pred)
-                loss_stochastic_normal = torch.pow(stochastic_matrix_true[possible_tensor] - stochastic_matrix_pred[possible_tensor], 2).mean()
-
-            # Rander graph
-            #g = make_dot(loss_stochastic, {})
-            #g.render()
+            #loss_stochastic = torch.pow(stochastic_matrix_true[0, possible_tensor[0]] - stochastic_matrix_pred[0, possible_tensor[0]], 2).mean()
 
             # Backpropagation
             loss_stochastic.backward()
-            #print('움직였을 때: %.4f, 가만히 있을 때: %.4f' % (loss_stochastic, loss_stochastic_normal))
+            #print('TYPE NORMAL', type_normal_tensor[0])
+            #print('INVERSE RATIO', inverse_ratio[0])
+            #print('REF', stochastic_matrix_true[0])
+            #print('MAT', stochastic_matrix)
+            #print('GRAD', stochastic_matrix.grad)
+
+            # Predict tensor using stochastic matrix
+            stochastic_matrix_pred = []
+            tmp = stochastic_matrix_normal
+            for i in range(args.k):
+                stochastic_matrix_pred.append(tmp)
+                tmp = torch.mm(tmp, stochastic_matrix_normal)
+            stochastic_matrix_pred = torch.stack(stochastic_matrix_pred)
+
+            # Calculate loss_stochastic
+            loss_stochastic_normal = torch.pow(stochastic_matrix_true[possible_tensor] - stochastic_matrix_pred[possible_tensor], 2).mean()
 
             # Update stochastic matrix
             with torch.no_grad():
+                #print('Before', stochastic_matrix_true)
+                #print(stochastic_matrix.grad)
                 stochastic_matrix -= args.lr2 * stochastic_matrix.grad
+                #print('AFTER', stochastic_matrix)
                 stochastic_matrix.grad.zero_()
                 stochastic_matrix[stochastic_matrix<1e-3] = 1e-3
                 # Condition: 1. update only explicit edge, 2. row-normalize
                 stochastic_matrix = stochastic_matrix * meta_adjacency_matrix
                 stochastic_matrix = stochastic_matrix / (stochastic_matrix.sum(dim=1, keepdim=True) + 1e-15)
-                print(stochastic_matrix)
+                #print(stochastic_matrix)
             stochastic_matrix.requires_grad_(True)
 
             # Summary
             if n_iter % 10 == 9:
-                loss_stochastic_f.write('%f\n' % loss_stochastic.item())
+                """
+                loss_stochastic_f.write('%f %f\n' % (loss_stochastic.item(), loss_stochastic_normal.item()))
                 for hop_count in range(inverse_ratio.shape[0]):
                     for src_type in range(inverse_ratio.shape[1]):
                         for tgt_type in range(inverse_ratio.shape[2]):
                             inverse_ratio_f.write('%.4f ' % inverse_ratio[hop_count, src_type, tgt_type].item())
                 inverse_ratio_f.write('\n')
+                """
                 for src_type in range(stochastic_matrix.shape[0]):
                     for tgt_type in range(stochastic_matrix.shape[1]):
                         stochastic_matrix_f.write('%.4f ' % stochastic_matrix[src_type, tgt_type].item())
@@ -283,24 +289,35 @@ def main(args):
                         for j, t2 in enumerate(type_order):
                             writer.add_scalar('loss%d/%s%s'%(t, t1, t2), training_case_loss[t, i, j], n_iter)
                             writer.add_scalar('ratio%d/%s%s'%(t, t1, t2), inverse_ratio[t, i, j], n_iter)
-                layout = {'loss': {'loss': ['loss%d/%s%s' % (t, t1, t2)
-                                            for t1 in type_order
-                                            for t2 in type_order
-                                            for t in range(args.k)]},
-                          'ratio': {'ratio': ['ratio%d/%s%s'%(t, t1, t2)
-                                              for t1 in type_order
-                                              for t2 in type_order
-                                              for t in range(args.k)]}}
-                writer.add_custom_scalars(layout)
-                embedding = model.relationship_embedding.detach().cpu()
+                relationship_embedding = model.relationship_embedding.detach().cpu()
                 writer.add_image(tag='relationship_embedding',
-                                 img_tensor=torch.sigmoid(embedding),
+                                 img_tensor=torch.sigmoid(relationship_embedding),
                                  global_step=n_iter,
                                  dataformats='HW')
-
-        np.save(os.path.join('output', get_name(args)+'.npy'),
-                model.node_embedding.detach().cpu().numpy())
     writer.close()
+
+    # 마지막 임베딩 저장 후 리턴
+    node_embedding = model.node_embedding.detach().cpu().numpy()
+    np.save(os.path.join('output', get_name(args)+'.npy'), node_embedding)
+    return node_embedding
+
+
+def main(args):
+    # 로거 생성
+    os.makedirs('log', exist_ok=True)
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+    logger.addHandler(logging.StreamHandler())
+
+    # 데이터 로드
+    node_type, edge_df, _, _ = load_data(args)
+
+    filename = os.path.join('log', get_name(args)+'.log')
+    handler = logging.FileHandler(filename)
+    # 훈련
+    logger.addHandler(handler)
+    node_embedding = train(args, node_type, edge_df, logger)
+    logger.removeHandler(handler)
 
 
 if __name__=='__main__':
